@@ -140,11 +140,20 @@ module RadixSortLSD
         return ((bucket * numLocales * numTasks) + (loc * numTasks) + task);
     }
 
+    use Time;
     /* Radix Sort Least Significant Digit
        radix sort a block distributed array
        returning a permutation vector as a block distributed array */
     proc radixSortLSD_ranks(a:[?aD] ?t, checkSorted: bool = true): [aD] int {
+        var checkSortedT: Timer;
+        var arrayCreateT: Timer;
+        var countDigitsT: Timer;
+        var globalCountsT: Timer;
+        var calcPosAndPermuteT: Timer;
+        var arrayCopyT: Timer;
+        var ranksAssignT: Timer;
 
+        checkSortedT.start();
         // check to see if array is already sorted
         if (checkSorted) {
             if (isSorted(a)) {
@@ -152,11 +161,13 @@ module RadixSortLSD
                 return ranks;
             }
         }
+        checkSortedT.stop();
         
         var (nBits, negs) = getBitWidth(a);
         try! rsLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
                                        "type = %s nBits = %t".format(t:string,nBits));
         
+        arrayCreateT.start();
         // form (key,rank) vector
         var kr0: [aD] (t,int) = [(key,rank) in zip(a,aD)] (key,rank);
         var kr1: [aD] (t,int);
@@ -165,12 +176,14 @@ module RadixSortLSD
         var gD = newBlockDom({0..#(numLocales * numTasks * numBuckets)});
         var globalCounts: [gD] int;
         var globalStarts: [gD] int;
+        arrayCreateT.stop();
         
         // loop over digits
         for rshift in {0..#nBits by bitsPerDigit} {
             const last = (rshift + bitsPerDigit) >= nBits;
             try! rsLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
                                                         "rshift = %t".format(rshift));
+            countDigitsT.start();
             // count digits
             coforall loc in Locales {
                 on loc {
@@ -201,14 +214,18 @@ module RadixSortLSD
                     }//coforall task
                 }//on loc
             }//coforall loc
+            countDigitsT.stop();
             
+            globalCountsT.start();
             // scan globalCounts to get bucket ends on each locale/task
             globalStarts = + scan globalCounts;
             globalStarts = globalStarts - globalCounts;
             
             if vv {printAry("globalCounts =",globalCounts);try! stdout.flush();}
             if vv {printAry("globalStarts =",globalStarts);try! stdout.flush();}
+            globalCountsT.stop();
             
+            calcPosAndPermuteT.start();
             // calc new positions and permute
             coforall loc in Locales {
                 on loc {
@@ -246,14 +263,27 @@ module RadixSortLSD
                 }//on loc
             }//coforall loc
             
+            calcPosAndPermuteT.stop();
+            arrayCopyT.start();
             // copy back to k0 and r0 for next iteration
             // Only do this if there are more digits left
             if !last {
                 kr0 = kr1;
             }
+            arrayCopyT.stop();
         } // for rshift
 
+        ranksAssignT.start();
         var ranks: [aD] int = [(key, rank) in kr1] rank;
+        ranksAssignT.stop();
+        writef("checkSortedT:       %.2dr\n",         checkSortedT.elapsed());
+        writef("arrayCreateT:       %.2dr\n",         arrayCreateT.elapsed());
+        writef("countDigitsT:       %.2dr\n",         countDigitsT.elapsed());
+        writef("globalCountsT:      %.2dr\n",         globalCountsT.elapsed());
+        writef("calcPosAndPermuteT: %.2dr\n",         calcPosAndPermuteT.elapsed());
+        writef("arrayCopyT:         %.2dr\n",         arrayCopyT.elapsed());
+        writef("ranksAssignT:       %.2dr\n",         ranksAssignT.elapsed());
+
         return ranks;
         
     }//proc radixSortLSD_ranks
