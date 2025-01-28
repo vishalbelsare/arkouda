@@ -1,0 +1,42 @@
+{
+    "parameter_classes": {
+        "array": {
+            "nd": [1,2,3],
+            "dtype": [
+                "int",
+                "uint",
+                "uint(8)",
+                "real",
+                "bool",
+                "bigint"
+            ]
+        },
+        "SparseSymEntry": {
+            "etype": ["int"],
+            "dimensions": [2],
+            "matLayout": {
+                "__enum__": "SparseMatrix.Layout",
+                "__variants__": ["CSR", "CSC"]
+            }
+        },
+        "binop": {
+            "dtype": [
+                "int",
+                "uint",
+                "real",
+                "bool",
+                "bigint"
+            ]
+        },
+        "scalar": {
+            "dtype": [
+                "int",
+                "uint",
+                "uint(8)",
+                "real",
+                "bool",
+                "bigint"
+            ]
+        }
+    }
+}

@@ -7,12 +7,12 @@ config param debug = false;
 config const timing = true;
 
 module SortModuleStuff {
-  use Sort only DefaultComparator, defaultComparator, chpl_compare, chpl_check_comparator;
+  use Sort only defaultComparator, chpl_compare, chpl_check_comparator;
 
 /* BEGIN STUFF THAT SHOULD BE IN SORT MODULE */
 
 pragma "no doc"
-proc shellSort(Data: [?Dom] ?eltType, comparator:?rec=defaultComparator,
+proc shellSort(Data: [?Dom] ?eltType, comparator:?rec=new defaultComparator(),
                start=Dom.low, end=Dom.high)
 {
   chpl_check_comparator(comparator, eltType);
@@ -126,7 +126,7 @@ proc binForRecord(a, criterion, startbit:int)
   } else if canResolveMethod(criterion, "key", a) {
     // Try to use the default comparator to get a keyPart.
     return binForRecordKeyPart(criterion.key(a),
-                               defaultComparator,
+                               new defaultComparator(),
                                startbit);
   } else {
     compilerError("Bad comparator for radix sort ", criterion.type:string,
@@ -160,7 +160,7 @@ proc msbRadixSortParamLastStartBit(Data:[], comparator) param {
   // Compute end_bit if it's known
   // Default comparator on integers has fixed width
   const ref element = Data[Data.domain.low];
-  if comparator.type == DefaultComparator && fixedWidth(element.type) > 0 {
+  if comparator.type == defaultComparator && fixedWidth(element.type) > 0 {
     return fixedWidth(element.type) - RADIX_BITS;
   } else if canResolveMethod(comparator, "key", element) {
     type keyType = comparator.key(element).type;
@@ -212,7 +212,7 @@ proc findDataStartBit(startbit:int, min_ubits, max_ubits):int {
 }
 
 pragma "no doc"
-proc msbRadixSort(Data:[], comparator:?rec=defaultComparator) {
+proc msbRadixSort(Data:[], comparator:?rec=new defaultComparator()) {
 
   var endbit:int;
   endbit = msbRadixSortParamLastStartBit(Data, comparator);
@@ -667,7 +667,7 @@ proc simpletestcore(input:[]) {
   var localCopy = input;
   shuffle(localCopy, seed);
 
-  const blockDom = newBlockDom(input.domain);
+  const blockDom = Block.createDomain(input.domain);
   var src: [blockDom] uint = localCopy;
   var dst: [blockDom] uint;
 
@@ -677,7 +677,7 @@ proc simpletestcore(input:[]) {
 
   msbRadixSortWithScratchSpace(blockDom.low, blockDom.high,
                                dst, src,
-                               defaultComparator,
+                               new defaultComparator(),
                                0, max(int));
 
   if debug {
@@ -722,7 +722,7 @@ simpletest([0x01:uint,
 
 
 proc randomtest(n:int) {
-  const blockDom = newBlockDom({0..#n});
+  const blockDom = Block.createDomain({0..#n});
   var src: [blockDom] uint;
   var seed = SeedGenerator.oddCurrentTime;
   fillRandom(src, seed);
@@ -735,7 +735,7 @@ proc randomtest(n:int) {
   timer.start();
   msbRadixSortWithScratchSpace(0, n-1,
                                dst, src,
-                               defaultComparator,
+                               new defaultComparator(),
                                0, max(int));
   timer.stop();
 
@@ -794,14 +794,14 @@ proc argsortDRS(a: [?aD] int, aMin: int, aMax: int): [aD] int {
 // fill a with integers from interval aMin..(aMax-1)
 proc fillRandInt(a: [?aD] int, aMin: int, aMax: int) {
     
-    var t1 = Time.getCurrentTime();
+    var t1 = Time.timeSinceEpoch().totalSeconds();
     coforall loc in Locales {
         on loc {
             var R = new owned RandomStream(real); R.getNext();
             [i in a.localSubdomain()] a[i] = (R.getNext() * (aMax - aMin) + aMin):int;
         }
     }
-    writeln("compute time = ",Time.getCurrentTime() - t1,"sec"); try! stdout.flush();
+    writeln("compute time = ",Time.timeSinceEpoch().totalSeconds() - t1,"sec"); try! stdout.flush();
     
 }
 proc isSorted(A:[?D] ?t): bool {
@@ -816,7 +816,7 @@ proc isSorted(A:[?D] ?t): bool {
 }
 
 proc test_argsort(n: int, nVals: int) {
-    const blockDom = newBlockDom({0..#n});
+    const blockDom = Block.createDomain({0..#n});
     var a: [blockDom] int;
 
     var aMin = 0;
@@ -828,10 +828,10 @@ proc test_argsort(n: int, nVals: int) {
     var localCopy:[0..#n] int = a;
 
     writeln(">>> argsortDRS");
-    var t1 = Time.getCurrentTime();
+    var t1 = Time.timeSinceEpoch().totalSeconds();
     // returns a perm vector
     var iv = argsortDRS(a, aMin, aMax);
-    writeln("sort time = ",Time.getCurrentTime() - t1,"sec"); try! stdout.flush();
+    writeln("sort time = ",Time.timeSinceEpoch().totalSeconds() - t1,"sec"); try! stdout.flush();
 
     // permute into sorted order
     var sorted: [a.domain] int = a[iv];

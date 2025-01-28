@@ -1,12 +1,12 @@
 module SipHash {
   private use AryUtil;
-  private use CPtr;
-  private use SysCTypes;
+  private use CTypes;
   use ServerConfig;
   use ServerErrors;
   use Reflection;
   use Logging;
-  
+  use OS.POSIX;
+
   param cROUNDS = 2;
   param dROUNDS = 4;
 
@@ -15,7 +15,8 @@ module SipHash {
   const defaultSipHashKey: [0..#16] uint(8) = for i in 0..#16 do i: uint(8);
 
   private config const logLevel = ServerConfig.logLevel;
-  const shLogger = new Logger(logLevel);
+  private config const logChannel = ServerConfig.logChannel;
+  const shLogger = new Logger(logLevel, logChannel);
 
   inline proc ROTL(x, b) {
     return (((x) << (b)) | ((x) >> (64 - (b))));
@@ -58,9 +59,9 @@ module SipHash {
   private inline proc XTO64_LE(in x: ?t) {
     var y: uint(64);
     if isSubtype(t, c_ptr) {
-      c_memcpy(c_ptrTo(y), x, c_sizeof(t));
+      memcpy(c_ptrTo(y), x, c_sizeof(t));
     } else if numBytes(t) == 8 {
-      c_memcpy(c_ptrTo(y), c_ptrTo(x), numBytes(t));
+      memcpy(c_ptrTo(y), c_ptrTo(x), numBytes(t).safeCast(c_size_t));
     } else {
       compilerError("input must have 64 bit values");
     }
@@ -87,7 +88,7 @@ module SipHash {
     return res;
   }
 
-  proc sipHash128(msg: [] ?t, D): 2*uint(64) where ((t == uint(8)) ||
+  proc sipHash128(ref msg: [] ?t, D): 2*uint(64) where ((t == uint(8)) ||
                                                     (t == int(64)) ||
                                                     (t == real(64))) {
     return computeSipHashLocalized(msg, D, 16);
@@ -105,7 +106,7 @@ module SipHash {
     return computeSipHash(c_ptrTo(val), 0..#1, 16, 8);
   }
   
-  private proc computeSipHashLocalized(msg: [] ?t, region: range(?), param outlen: int) {
+  private proc computeSipHashLocalized(ref msg: [] ?t, region: range(?), param outlen: int) {
     const localSlice = new lowLevelLocalizingSlice(msg, region);
     return computeSipHash(localSlice.ptr, 0..#region.size, outlen, numBytes(t));
   }

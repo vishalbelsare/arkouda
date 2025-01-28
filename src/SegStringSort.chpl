@@ -1,14 +1,15 @@
 module SegStringSort {
-  use SegmentedArray;
-  use Sort;
+  use SegmentedString;
+  use ArkoudaSortCompat;
   use Time;
   use IO;
-  use CPtr;
+  use CTypes;
   use CommAggregation;
   use PrivateDist;
   use Reflection;
   use Logging;
   use ServerConfig;
+  use BlockDist;
 
   private config const SSS_v = false;
   private const vv = SSS_v;
@@ -22,37 +23,38 @@ module SegStringSort {
   private const PARTITION_LONG_STRING = SSS_PARTITION_LONG_STRING;
 
   private config const logLevel = ServerConfig.logLevel;
-  const ssLogger = new Logger(logLevel);
+  private config const logChannel = ServerConfig.logChannel;
+  const ssLogger = new Logger(logLevel, logChannel);
 
-  record StringIntComparator {
+  record StringIntComparator: keyPartComparator {
     proc keyPart((a0,_): (string, int), in i: int) {
       // Just run the default comparator on the string
-      return Sort.defaultComparator.keyPart(a0, i);
+      return (new defaultComparator()).keyPart(a0, i);
     }
   }
   
-  proc twoPhaseStringSort(ss: SegString): [ss.offsets.aD] int throws {
-    var t = getCurrentTime();
+  proc twoPhaseStringSort(ss: SegString): [ss.offsets.a.domain] int throws {
+    var t = timeSinceEpoch().totalSeconds();
     const lengths = ss.getLengths();
     ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                       "Found lengths in %t seconds".format(getCurrentTime() - t));
-    t = getCurrentTime();
+                                       "Found lengths in %? seconds".format(timeSinceEpoch().totalSeconds() - t));
+    t = timeSinceEpoch().totalSeconds();
     // Compute length survival function and choose a pivot length
     const (pivot, nShort) = getPivot(lengths);
     ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                       "Computed pivot in %t seconds".format(getCurrentTime() - t)); 
+                                       "Computed pivot in %? seconds".format(timeSinceEpoch().totalSeconds() - t)); 
     ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                       "Pivot = %t, nShort = %t".format(pivot, nShort)); 
-    t = getCurrentTime();
-    const longStart = ss.offsets.aD.low + nShort;
+                                       "Pivot = %?, nShort = %?".format(pivot, nShort)); 
+    t = timeSinceEpoch().totalSeconds();
+    const longStart = ss.offsets.a.domain.low + nShort;
     const isLong = (lengths >= pivot);
-    var locs = [i in ss.offsets.aD] i;
+    var locs = [i in ss.offsets.a.domain] i;
     // check there's enough room to create a copy for scan and throw if creating a copy would go over memory limit
     overMemLimit(numBytes(int) * isLong.size);
     var longLocs = + scan isLong;
     locs -= longLocs;
-    var gatherInds: [ss.offsets.aD] int;
-    forall (i, l, ll, t) in zip(ss.offsets.aD, locs, longLocs, isLong) 
+    var gatherInds = makeDistArray(ss.offsets.a.domain, int);
+    forall (i, l, ll, t) in zip(ss.offsets.a.domain, locs, longLocs, isLong) 
       with (var agg = newDstAggregator(int)) {
       if !t {
         agg.copy(gatherInds[l], i);
@@ -61,36 +63,36 @@ module SegStringSort {
       }
     }
     ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                   "Partitioned short/long strings in %t seconds".format(getCurrentTime() - t));
+                   "Partitioned short/long strings in %? seconds".format(timeSinceEpoch().totalSeconds() - t));
     on Locales[Locales.domain.high] {
-      var tl = getCurrentTime();
-      const ref highDom = {longStart..ss.offsets.aD.high};
+      var tl = timeSinceEpoch().totalSeconds();
+      const ref highDom = {longStart..ss.offsets.a.domain.high};
       ref highInds = gatherInds[highDom];
       // Get local copy of the long strings as Chapel strings, and their original indices
       var stringsWithInds = gatherLongStrings(ss, lengths, highInds);
 
       ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                           "Gathered long strings in %t seconds".format(getCurrentTime() - tl));
-      tl = getCurrentTime();
+                           "Gathered long strings in %? seconds".format(timeSinceEpoch().totalSeconds() - tl));
+      tl = timeSinceEpoch().totalSeconds();
       // Sort the strings, but bring the inds along for the ride
       const myComparator = new StringIntComparator();
       sort(stringsWithInds, comparator=myComparator);
 
       ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                             "Sorted long strings in %t seconds".format(getCurrentTime() - tl));
-      tl = getCurrentTime();
+                             "Sorted long strings in %? seconds".format(timeSinceEpoch().totalSeconds() - tl));
+      tl = timeSinceEpoch().totalSeconds();
 
       forall (h, s) in zip(highDom, stringsWithInds.domain) with (var agg = newDstAggregator(int)) {
         const (_,val) = stringsWithInds[s];
         agg.copy(gatherInds[h], val);
       }
       ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                              "Permuted long inds in %t seconds".format(getCurrentTime() - tl));
+                              "Permuted long inds in %? seconds".format(timeSinceEpoch().totalSeconds() - tl));
     }
-    t = getCurrentTime();
+    t = timeSinceEpoch().totalSeconds();
     const ranks = radixSortLSD_raw(ss.offsets.a, lengths, ss.values.a, gatherInds, pivot);
     ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                          "Sorted ranks in %t seconds".format(getCurrentTime() - t));
+                                          "Sorted ranks in %? seconds".format(timeSinceEpoch().totalSeconds() - t));
     return ranks;
   }
   
@@ -104,12 +106,12 @@ module SegStringSort {
       const NBINS = 2**16;
       const BINDOM = {0..#NBINS};
       var pBins: [PrivateSpace][BINDOM] int;
-      coforall loc in Locales {
+      coforall loc in Locales with (ref pBins) {
         on loc {
           const lD = D.localSubdomain();
           ref locLengths = lengths.localSlice[lD];
           var locBins: [0..#numTasks][BINDOM] int;
-          coforall task in 0..#numTasks {
+          coforall task in 0..#numTasks with (ref locBins) {
             const tD = calcBlock(task, lD.low, lD.high);
             for i in tD {
               var bin = min(locLengths[i], NBINS-1);
@@ -136,17 +138,17 @@ module SegStringSort {
     }
   }
   
-  proc gatherLongStrings(ss: SegString, lengths: [] int, longInds: [?D] int): [] (string, int) {
+  proc gatherLongStrings(ss: SegString, lengths: [] int, longInds: [?D] int): [] (string, int) throws {
     ref oa = ss.offsets.a;
     ref va = ss.values.a;
     const myD: domain(1) = D;
-    const myInds: [myD] int = longInds;
-    var stringsWithInds: [myD] (string, int);
+    const myInds = makeDistArray(longInds);
+    var stringsWithInds = makeDistArray(myD, (string, int));
     forall (i, si) in zip(myInds, stringsWithInds) {
       const l = lengths[i];
       var buf: [0..#(l+1)] uint(8);
       buf[{0..#l}] = va[{oa[i]..#l}];
-      si = (try! createStringWithBorrowedBuffer(c_ptrTo(buf), l, l+1), i);
+      si = (try! string.createBorrowingBuffer(c_ptrTo(buf), l, l+1), i);
     }
     return stringsWithInds;
   }
@@ -214,28 +216,27 @@ module SegStringSort {
       }
     }
     
-    var kr0: [aD] state;
+    var kr0 = makeDistArray(aD, state);
     ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),"rshift = 0");
     forall (k, rank) in zip(kr0, inds) with (var agg = newSrcAggregator(uint(8))) {
       copyDigit(k, offsets[rank], lengths[rank], rank, pivot, agg);
     }
-    var kr1: [aD] state;
+    var kr1 = makeDistArray(aD, state);
     // create a global count array to scan
-    var gD = newBlockDom({0..#(numLocales * numTasks * numBuckets)});
-    var globalCounts: [gD] int;
-    var globalStarts: [gD] int;
+    var globalCounts = makeDistArray(numLocales * numTasks * numBuckets, int);
+    var globalStarts = makeDistArray(numLocales * numTasks * numBuckets, int);
         
     // loop over digits
     for rshift in {2..#pivot by 2} {
-      ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),"rshift = %t".format(rshift));
+      ssLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),"rshift = %?".format(rshift));
       // count digits
-      coforall loc in Locales {
+      coforall loc in Locales with (ref globalCounts) {
         on loc {
-          coforall task in 0..#numTasks {
+          coforall task in 0..#numTasks with (ref globalCounts) {
             // bucket domain
             var bD = {0..#numBuckets};
             // allocate counts
-            var taskBucketCounts: [bD] int;
+            var taskBucketCounts = makeDistArray(bD, int);
             // get local domain's indices
             var lD = kr0.localSubdomain();
             // calc task's indices from local domain's indices
@@ -264,13 +265,13 @@ module SegStringSort {
       globalStarts = globalStarts - globalCounts;
             
       // calc new positions and permute
-      coforall loc in Locales {
+      coforall loc in Locales with (ref kr0, ref kr1) {
         on loc {
-          coforall task in 0..#numTasks {
+          coforall task in 0..#numTasks with (ref kr0, ref kr1) {
             // bucket domain
             var bD = {0..#numBuckets};
             // allocate counts
-            var taskBucketPos: [bD] int;
+            var taskBucketPos = makeDistArray(bD, int);
             // get local domain's indices
             var lD = kr0.localSubdomain();
             // calc task's indices from local domain's indices

@@ -6,7 +6,7 @@ module KExtremeMsg
 {
     use ServerConfig;
 
-    use Time only;
+    use Time;
     use Math only;
     use Reflection;
     use ServerErrors;
@@ -15,7 +15,7 @@ module KExtremeMsg
 
     use MultiTypeSymbolTable;
     use MultiTypeSymEntry;
-    use SegmentedArray;
+    use SegmentedString;
     use ServerErrorStrings;
 
     use KReduce;
@@ -24,7 +24,8 @@ module KExtremeMsg
     use ArraySetopsMsg;
 
     private config const logLevel = ServerConfig.logLevel;
-    const keLogger = new Logger(logLevel);
+    private config const logChannel = ServerConfig.logChannel;
+    const keLogger = new Logger(logLevel, logChannel);
 
     /*
     Parse, execute, and respond to a mink message
@@ -34,46 +35,56 @@ module KExtremeMsg
     :type st: borrowed SymTab
     :returns: (MsgTuple) response message
     */
-    proc minkMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
+    proc minkMsg(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab): MsgTuple throws {
         param pn = Reflection.getRoutineName();
         var repMsg: string; // response message
-        // split request into fields
-        var (name, k, returnIndices) = payload.splitMsgToTuple(3);
 
         var vname = st.nextName();
 
-        var gEnt: borrowed GenSymEntry = st.lookup(name);
+        var gEnt: borrowed GenSymEntry = getGenericTypedArrayEntry(msgArgs.getValueOf("array"), st);
+        var k = msgArgs.get("k").getIntValue();
+        var returnIndices = msgArgs.get("rtnInd").getBoolValue();
 
         select(gEnt.dtype) {
             when (DType.Int64) {
                 var e = toSymEntry(gEnt,int);
-                var aV;
-
-                if !stringtobool(returnIndices) {
-                    aV = computeExtremaValues(e.a, k:int);
-                } else {
-                    aV = computeExtremaIndices(e.a, k:int);
-                }
-
-                st.addEntry(vname, new shared SymEntry(aV));
+                var aV = if !returnIndices then computeExtremaValues(e.a, k) else computeExtremaIndices(e.a, k);
+                st.addEntry(vname, createSymEntry(aV));
 
                 repMsg = "created " + st.attrib(vname);
                 keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
                 return new MsgTuple(repMsg, MsgType.NORMAL);
             }
-            when (DType.Float64) {
-                if !stringtobool(returnIndices) {
-                    var e = toSymEntry(gEnt,real);
-                    var aV = computeExtremaValues(e.a, k:int);
-                    st.addEntry(vname, new shared SymEntry(aV));
+            when (DType.UInt64) {
+                var e = toSymEntry(gEnt,uint);
+                if !returnIndices {
+                    var aV = computeExtremaValues(e.a, k);
+                    st.addEntry(vname, createSymEntry(aV));
 
                     repMsg = "created " + st.attrib(vname);
                     keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
                     return new MsgTuple(repMsg, MsgType.NORMAL);
                 } else {
-                    var e = toSymEntry(gEnt,real);
-                    var aV = computeExtremaIndices(e.a, k:int);
-                    st.addEntry(vname, new shared SymEntry(aV));
+                    var aV = computeExtremaIndices(e.a, k);
+                    st.addEntry(vname, createSymEntry(aV));
+
+                    repMsg = "created " + st.attrib(vname);
+                    keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                    return new MsgTuple(repMsg, MsgType.NORMAL);
+                }
+            }
+            when (DType.Float64) {
+                var e = toSymEntry(gEnt,real);
+                if !returnIndices {
+                    var aV = computeExtremaValues(e.a, k);
+                    st.addEntry(vname, createSymEntry(aV));
+
+                    repMsg = "created " + st.attrib(vname);
+                    keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                    return new MsgTuple(repMsg, MsgType.NORMAL);
+                } else {
+                    var aV = computeExtremaIndices(e.a, k);
+                    st.addEntry(vname, createSymEntry(aV));
 
                     repMsg = "created " + st.attrib(vname);
                     keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
@@ -96,46 +107,55 @@ module KExtremeMsg
     :type st: borrowed SymTab
     :returns: (MsgTuple) response message
     */
-    proc maxkMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
+    proc maxkMsg(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab): MsgTuple throws {
         param pn = Reflection.getRoutineName();
         var repMsg: string; // response message
-        // split request into fields
-        var (name, k, returnIndices) = payload.splitMsgToTuple(3);
 
         var vname = st.nextName();
-        var gEnt: borrowed GenSymEntry = st.lookup(name);
+        var gEnt: borrowed GenSymEntry = getGenericTypedArrayEntry(msgArgs.getValueOf("array"), st);
+        var k = msgArgs.get("k").getIntValue();
+        var returnIndices = msgArgs.get("rtnInd").getBoolValue();
 
         select(gEnt.dtype) {
             when (DType.Int64) {
                 var e = toSymEntry(gEnt,int);
-                var aV;
-                if !stringtobool(returnIndices) {
-                    aV = computeExtremaValues(e.a, k:int, false);
-                } else {
-                    aV = computeExtremaIndices(e.a, k:int, false);
-                }
-
-                st.addEntry(vname, new shared SymEntry(aV));
+                var aV = if !returnIndices then computeExtremaValues(e.a, k, false) else computeExtremaIndices(e.a, k, false);
+                st.addEntry(vname, createSymEntry(aV));
 
                 repMsg = "created " + st.attrib(vname);
                 keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
                 return new MsgTuple(repMsg, MsgType.NORMAL);
            }
-           when (DType.Float64) {
-               if !stringtobool(returnIndices) {
-                   var e = toSymEntry(gEnt,real);
-                   var aV = computeExtremaValues(e.a, k:int, false);
-
-                   st.addEntry(vname, new shared SymEntry(aV));
+            when (DType.UInt64) {
+                var e = toSymEntry(gEnt,uint);
+               if !returnIndices {
+                   var aV = computeExtremaValues(e.a, k, false);
+                   st.addEntry(vname, createSymEntry(aV));
 
                    repMsg = "created " + st.attrib(vname);
                    keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
                    return new MsgTuple(repMsg, MsgType.NORMAL);
                } else {
-                   var e = toSymEntry(gEnt,real);
-                   var aV = computeExtremaIndices(e.a, k:int, false);
+                   var aV = computeExtremaIndices(e.a, k, false);
+                   st.addEntry(vname, createSymEntry(aV));
 
-                   st.addEntry(vname, new shared SymEntry(aV));
+                   repMsg = "created " + st.attrib(vname);
+                   keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                   return new MsgTuple(repMsg, MsgType.NORMAL);
+               }
+           }
+           when (DType.Float64) {
+                var e = toSymEntry(gEnt,real);
+               if !returnIndices {
+                   var aV = computeExtremaValues(e.a, k, false);
+                   st.addEntry(vname, createSymEntry(aV));
+
+                   repMsg = "created " + st.attrib(vname);
+                   keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                   return new MsgTuple(repMsg, MsgType.NORMAL);
+               } else {
+                   var aV = computeExtremaIndices(e.a, k, false);
+                   st.addEntry(vname, createSymEntry(aV));
 
                    repMsg = "created " + st.attrib(vname);
                    keLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
@@ -143,7 +163,6 @@ module KExtremeMsg
                
                }
            }
-
            otherwise {
                var errorMsg = notImplementedError("maxk",gEnt.dtype);
                keLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
@@ -151,4 +170,8 @@ module KExtremeMsg
            }
         }
     }
+
+    use CommandMap;
+    registerFunction("mink", minkMsg, getModuleName());
+    registerFunction("maxk", maxkMsg, getModuleName());
 }

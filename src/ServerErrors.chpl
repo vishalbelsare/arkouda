@@ -1,7 +1,8 @@
 module ServerErrors {
 
-    use SysError;
     private use IO; // for string.format
+
+    class OutOfBoundsError: Error {}
 
     /*
      * Generates an error message that provides a fuller context to the error
@@ -22,7 +23,7 @@ module ServerErrors {
          */
         proc init(msg : string, lineNumber: int, routineName: string, 
                       moduleName: string, errorClass: string='ErrorWithContext') {
-            try! super.init("%s Line %t In %s.%s: %s".format(errorClass,lineNumber,
+            try! super.init("%s Line %? In %s.%s: %s".format(errorClass,lineNumber,
                                                           moduleName,
                                                           routineName,
                                                           msg));
@@ -117,14 +118,14 @@ module ServerErrors {
     }
 
     /*
-     * The SegArrayError is thrown if the file corresponding to the SegArray lacks either the
-     * SEGARRAY_OFFSET_NAME or SEGARRAY_VALUE_NAME dataset.
+     * The SegStringError is thrown if the file corresponding to the SegString lacks either the
+     * SEGSTRING_OFFSET_NAME or SEGSTRING_VALUE_NAME dataset.
      */
-    class SegArrayError: ErrorWithContext { 
+    class SegStringError: ErrorWithContext { 
 
         proc init(msg : string, lineNumber: int, routineName: string, 
                                                            moduleName: string) { 
-           super.init(msg,lineNumber,routineName,moduleName,errorClass='SegArrayError'); 
+           super.init(msg,lineNumber,routineName,moduleName,errorClass='SegStringError'); 
         } 
 
         proc init(){ super.init(); }
@@ -172,13 +173,67 @@ module ServerErrors {
     }
 
     /*
-     * Generatea a detailed, context-rich error message for errors such as instances of 
+     * The UnsupportedOSError is thrown if a function cannot be executed on the host OS.
+     */
+    class UnsupportedOSError: ErrorWithContext {
+
+        proc init(msg : string, lineNumber: int, routineName: string,
+                                                           moduleName: string) {
+           super.init(msg,lineNumber,routineName,moduleName,errorClass='UnsupportedOSError');
+        }
+
+        proc init(){ super.init(); }
+    }
+
+    /*
+     * The IOError is thrown if there is an error in IO code.
+     */
+    class IOError: ErrorWithContext {
+
+        proc init(msg : string, lineNumber: int, routineName: string,
+                                                           moduleName: string) {
+           super.init(msg,lineNumber,routineName,moduleName,errorClass='IOError');
+        }
+
+        proc init(){ super.init(); }
+    }
+
+    /*
+     * The OverMemoryLimitError is thrown if the projected memory required for a method
+     * invocation will exceed available, free memory on 1..n locales
+     */
+    class OverMemoryLimitError: ErrorWithContext {
+
+        proc init(msg : string, lineNumber: int, routineName: string,
+                                                           moduleName: string) {
+           super.init(msg,lineNumber,routineName,moduleName,errorClass='OverMemoryLimitError');
+        }
+
+        proc init(){ super.init(); }
+    }
+
+     /*
+     * The ConfigurationError if the current instance of the server was not
+     * configured to complete a requested operation.
+     */
+    class ConfigurationError: ErrorWithContext {
+
+        proc init(msg : string, lineNumber: int, routineName: string,
+                                                           moduleName: string) {
+           super.init(msg,lineNumber,routineName,moduleName,errorClass='IOError');
+        }
+
+        proc init(){ super.init(); }
+    }
+
+    /*
+     * Generates a detailed, context-rich error message for errors such as instances of 
      * built-in Chapel Errors in a format that matches the Arkouda ErrorWithContext
      * error message format. 
      */
     proc generateErrorContext(msg: string, lineNumber: int, moduleName: string, routineName: string, 
                                         errorClass: string="ErrorWithContext") : string {
-        return try! "%s %t %s:%s %s".format(errorClass,lineNumber,moduleName,routineName,msg);
+        return try! "%s %? %s:%s %s".format(errorClass,lineNumber,moduleName,routineName,msg);
     }
  
     /*
@@ -187,7 +242,7 @@ module ServerErrors {
      * error was thrown.
      */
     proc getErrorWithContext(lineNumber: int, moduleName: string, 
-                    routineName: string, msg: string, errorClass: string): Error throws {
+                    routineName: string, msg: string, errorClass: string) throws {
         select errorClass {
             when "ErrorWithContext"             { return new owned 
                                                           ErrorWithContext(msg=msg,
@@ -249,7 +304,20 @@ module ServerErrors {
                                                           UnknownSymbolError(msg=msg,
                                                           lineNumber=lineNumber,
                                                           routineName=routineName,
-                                                          moduleName=moduleName); }                                                                                                                 
+                                                          moduleName=moduleName); }
+            when "IOError"                       { return new owned
+                                                          IOError(msg=msg,
+                                                          lineNumber=lineNumber,
+                                                          routineName=routineName,
+                                                          moduleName=moduleName); }
+
+            when "OverMemoryLimitError"          { return new owned
+                                                          OverMemoryLimitError(msg=msg,
+                                                          lineNumber=lineNumber,
+                                                          routineName=routineName,
+                                                          moduleName=moduleName); 
+                                                 }
+
             otherwise                            { return new owned 
                                                           Error(generateErrorContext(
                                                           msg=msg,

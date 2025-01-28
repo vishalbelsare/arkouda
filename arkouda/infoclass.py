@@ -1,40 +1,46 @@
 import json
 from json import JSONEncoder
-from typing import cast, List, Union
+from typing import List, Union, cast
+
 from typeguard import typechecked
+
 from arkouda.client import generic_msg
 
-__all__ = ["AllSymbols", "RegisteredSymbols", "information", "list_registry", "list_symbol_table",
-           'pretty_print_information']
+__all__ = [
+    "AllSymbols",
+    "RegisteredSymbols",
+    "information",
+    "list_registry",
+    "list_symbol_table",
+    "pretty_print_information",
+]
 AllSymbols = "__AllSymbols__"
 RegisteredSymbols = "__RegisteredSymbols__"
 
 
 def auto_str(cls):
     def __str__(self):
-        return '%s(%s)' % (
-            type(self).__name__,
-            ', '.join('%s=%s' % item for item in vars(self).items())
-        )
+        return "%s(%s)" % (type(self).__name__, ", ".join("%s=%s" % item for item in vars(self).items()))
 
     cls.__str__ = __str__
     return cls
 
 
 class EntryDecoder(JSONEncoder):
-    def default(self, o): return o.__dict__
+    def default(self, o):
+        return o.__dict__
 
 
 @auto_str
 class InfoEntry:
     def __init__(self, **kwargs) -> None:
-        self.name = kwargs['name']
-        self.dtype = kwargs['dtype']
-        self.size = kwargs['size']
-        self.ndim = kwargs['ndim']
-        self.shape = kwargs['shape']
-        self.itemsize = kwargs['itemsize']
-        self.registered = kwargs['registered']
+        self.name = kwargs["name"]
+        self.dtype = kwargs["dtype"]
+        self.size = kwargs["size"]
+        self.ndim = kwargs["ndim"]
+        self.shape = kwargs["shape"]
+        self.itemsize = kwargs["itemsize"]
+        self.registered = kwargs["registered"]
 
 
 @typechecked
@@ -62,31 +68,39 @@ def information(names: Union[List[str], str] = RegisteredSymbols) -> str:
     """
     if isinstance(names, str):
         if names in [AllSymbols, RegisteredSymbols]:
-            return cast(str, generic_msg(cmd="info", args="{}".format(names)))
+            return cast(str, generic_msg(cmd="info", args={"names": names}))
         else:
             names = [names]  # allows user to call ak.information(pda.name)
-    return cast(str, generic_msg(cmd="info", args=json.dumps(names)))
+    return cast(str, generic_msg(cmd="info", args={"names": json.dumps(names)}))
 
 
-def list_registry() -> List[str]:
+def list_registry(detailed: bool = False):
     """
     Return a list containing the names of all registered objects
 
     Parameters
     ----------
-    None
+    detailed: bool
+        Default = False
+        Return details of registry objects. Currently includes object type for any objects
 
     Returns
     -------
-    list
-        List of all object names in the registry
+    dict
+        Dict containing keys "Components" and "Objects".
 
     Raises
     ------
     RuntimeError
         Raised if there's a server-side error thrown
     """
-    return [i.name for i in _parse_json(RegisteredSymbols)]
+    data = json.loads(cast(str, generic_msg(cmd="list_registry")))
+    objs = json.loads(data["Objects"]) if data["Objects"] != "" else []
+    obj_types = json.loads(data["Object_Types"]) if data["Object_Types"] != "" else []
+    return {
+        "Objects": list(zip(objs, obj_types)) if detailed else objs,
+        "Components": json.loads(data["Components"]),
+    }
 
 
 def list_symbol_table() -> List[str]:

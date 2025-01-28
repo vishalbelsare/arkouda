@@ -1,15 +1,14 @@
 .. _usage-label:
 
-##########
-Usage
-##########
+#############
+Usage Guide
+#############
 
 .. toctree::
 
    usage/startup
    usage/pdarray
    usage/creation
-   usage/IO
    usage/arithmetic
    usage/indexing
    usage/histogram
@@ -18,3 +17,6 @@ Usage
    usage/groupby
    usage/strings
    usage/categorical
+   usage/random
+   usage/segarray
+   usage/arrayview

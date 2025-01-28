@@ -2,7 +2,7 @@ module JoinEqWithDTMsg
 {
     use ServerConfig;
 
-    use Time only;
+    use Time;
     use Math only;
     use Sort only;
     use Reflection;
@@ -20,7 +20,8 @@ module JoinEqWithDTMsg
     param POS_DT = 2;
 
     private config const logLevel = ServerConfig.logLevel;
-    const jeLogger = new Logger(logLevel);
+    private config const logChannel = ServerConfig.logChannel;
+    const jeLogger = new Logger(logLevel, logChannel);
 
     // operator overloads so + reduce and + scan can work on atomic int arrays
     operator +(x: atomic int, y: atomic int) {
@@ -93,7 +94,7 @@ module JoinEqWithDTMsg
                       resLimitPerLocale: int) throws {
 
         try! jeLogger.info(getModuleName(),getRoutineName(),getLineNumber(),
-                                            "resLimitPerLocale = %t".format(resLimitPerLocale));
+                                            "resLimitPerLocale = %?".format(resLimitPerLocale));
         
         // allocate result arrays per locale
         var locResI: [PrivateSpace] [0..#resLimitPerLocale] int;
@@ -104,7 +105,7 @@ module JoinEqWithDTMsg
         // actual number of results per locale
         var locNumResults: [PrivateSpace] int;
         
-        coforall loc in Locales {
+        coforall loc in Locales with (ref locResI, ref locResJ, ref locNumResults, ref resCounters) {
             on loc {
                 forall i in a1.localSubdomain() {
                     // more space in result list???
@@ -113,7 +114,7 @@ module JoinEqWithDTMsg
                         // return found flag and a range for the segment of that value(unique key)
                         var (found, j_seg) = findMatch(a1[i], seg, ukeys, perm);
                         try! jeLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                          "a1: %t found: %t j_seq: %t".format(a1[i], found, j_seg));
+                                          "a1: %? found: %? j_seq: %?".format(a1[i], found, j_seg));
                         // if there is a matching value in ukeys
                         if (found) {
                             var t1_i = t1[i];
@@ -185,7 +186,7 @@ module JoinEqWithDTMsg
         var numResults: int = resEnds[resEnds.domain.high];
 
         try! jeLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                                        "result ends: %t".format(resEnds));
+                                                        "result ends: %?".format(resEnds));
         try! jeLogger.info(getModuleName(),getRoutineName(),getLineNumber(),
                                                         "numResults = %i".format(numResults));
         
@@ -200,7 +201,7 @@ module JoinEqWithDTMsg
                 var gEnd: int = resEnds[here.id] - 1;
                 var gStart: int = resEnds[here.id] - locNumResults[here.id];
                 try! jeLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                                  "start: %t end: %t".format(gStart,gEnd));
+                                                  "start: %? end: %?".format(gStart,gEnd));
                 // copy local results into global results
                 resI[{gStart..gEnd}] = locResI[here.id][{0..#locNumResults[here.id]}];
                 resJ[{gStart..gEnd}] = locResJ[here.id][{0..#locNumResults[here.id]}];                
@@ -223,21 +224,26 @@ module JoinEqWithDTMsg
        pred: is the dt-predicate ("absDT","posDT","trueDT")
        resLimit: is how many answers can you tolerate ;-)
     */
-    proc joinEqWithDTMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
+    proc joinEqWithDTMsg(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab): MsgTuple throws {
         param pn = Reflection.getRoutineName();
         var repMsg: string; // response message
-        var (a1_name, g2Seg_name, g2Ukeys_name, g2Perm_name, t1_name,
-             t2_name, dtStr, predStr, resLimitStr) = payload.splitMsgToTuple(9);
-        var dt = try! dtStr:int;
-        var pred = predStr:int;
-        var resLimit = try! resLimitStr:int;
+        const dt = msgArgs.get("dt").getIntValue();
+        const pred = msgArgs.get("pred").getIntValue();
+        const resLimit = msgArgs.get("resLimit").getIntValue();
+
+        const a1_name = msgArgs.getValueOf("a1");
+        const g2Seg_name = msgArgs.getValueOf("g2seg");
+        const g2Ukeys_name = msgArgs.getValueOf("g2keys");
+        const g2Perm_name = msgArgs.getValueOf("g2perm");
+        const t1_name = msgArgs.getValueOf("t1");
+        const t2_name = msgArgs.getValueOf("t2");
         
         // get next symbol names for results
         var resI_name = st.nextName();
         var resJ_name = st.nextName();
         
         jeLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                "cmd: %s array1: %s g2seg2: %s g2ukeys: %s g2perm: %s t1name: %s t2name: %s dt: %t pred: %t resLimit: %t resI: %s resJ: %s".format(
+                "cmd: %s array1: %s g2seg2: %s g2ukeys: %s g2perm: %s t1name: %s t2name: %s dt: %? pred: %? resLimit: %? resI: %s resJ: %s".format(
                                             cmd, a1_name, g2Seg_name, g2Ukeys_name, 
                                             g2Perm_name, t1_name, t2_name, dt, 
                                             pred, resLimit, resI_name, resJ_name));
@@ -248,7 +254,7 @@ module JoinEqWithDTMsg
         // lookup arguments and check types
         // !!!!! check for DType.Int64 on all of these !!!!!
         // !!!!! check matching length on some arguments !!!!!
-        var a1Ent: borrowed GenSymEntry = st.lookup(a1_name);
+        var a1Ent: borrowed GenSymEntry = getGenericTypedArrayEntry(a1_name, st);
         if (a1Ent.dtype != DType.Int64) {
             throw getErrorWithContext(
                         msg=incompatibleArgumentsError(pn, dtype2str(a1Ent.dtype)),
@@ -259,7 +265,7 @@ module JoinEqWithDTMsg
         }
         var a1 = toSymEntry(a1Ent, int);
         
-        var g2SegEnt: borrowed GenSymEntry = st.lookup(g2Seg_name);
+        var g2SegEnt: borrowed GenSymEntry = getGenericTypedArrayEntry(g2Seg_name, st);
         if (g2SegEnt.dtype != DType.Int64) {
             throw getErrorWithContext(
                         msg=incompatibleArgumentsError(pn, dtype2str(g2SegEnt.dtype)),
@@ -270,7 +276,7 @@ module JoinEqWithDTMsg
         }
         var g2Seg = toSymEntry(g2SegEnt, int);
         
-        var g2UkeysEnt: borrowed GenSymEntry = st.lookup(g2Ukeys_name);
+        var g2UkeysEnt: borrowed GenSymEntry = getGenericTypedArrayEntry(g2Ukeys_name, st);
         if (g2UkeysEnt.dtype != DType.Int64) {
             throw getErrorWithContext(
                         msg=incompatibleArgumentsError(pn, dtype2str(g2UkeysEnt.dtype)),
@@ -290,7 +296,7 @@ module JoinEqWithDTMsg
         }
         var g2Ukeys = toSymEntry(g2UkeysEnt, int);
         
-        var g2PermEnt: borrowed GenSymEntry = st.lookup(g2Perm_name);
+        var g2PermEnt: borrowed GenSymEntry = getGenericTypedArrayEntry(g2Perm_name, st);
         if (g2PermEnt.dtype != DType.Int64) {
             throw getErrorWithContext(
                         msg=incompatibleArgumentsError(pn, dtype2str(g2PermEnt.dtype)),
@@ -302,7 +308,7 @@ module JoinEqWithDTMsg
         }
         var g2Perm = toSymEntry(g2PermEnt, int);
         
-        var t1Ent: borrowed GenSymEntry = st.lookup(t1_name);
+        var t1Ent: borrowed GenSymEntry = getGenericTypedArrayEntry(t1_name, st);
         if (t1Ent.dtype != DType.Int64) {
             throw getErrorWithContext(
                         msg=incompatibleArgumentsError(pn, dtype2str(t1Ent.dtype)),
@@ -323,7 +329,7 @@ module JoinEqWithDTMsg
         }
         var t1 = toSymEntry(t1Ent, int);
         
-        var t2Ent: borrowed GenSymEntry = st.lookup(t2_name);
+        var t2Ent: borrowed GenSymEntry = getGenericTypedArrayEntry(t2_name, st);
         if (t2Ent.dtype != DType.Int64) {
             throw getErrorWithContext(
                         msg=incompatibleArgumentsError(pn, dtype2str(t2Ent.dtype)),
@@ -362,12 +368,14 @@ module JoinEqWithDTMsg
                                         t1.a, t2.a, dt, pred, resLimitPerLocale);
         
         // puth results in the symbol table
-        st.addEntry(resI_name, new shared SymEntry(resI));
-        st.addEntry(resJ_name, new shared SymEntry(resJ));
+        st.addEntry(resI_name, createSymEntry(resI));
+        st.addEntry(resJ_name, createSymEntry(resJ));
         
         repMsg = "created " + st.attrib(resI_name) + " +created " + st.attrib(resJ_name);
         jeLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
         return new MsgTuple(repMsg, MsgType.NORMAL);
     }// end joinEqWithDTMsg()
-    
+
+    use CommandMap;
+    registerFunction("joinEqWithDT", joinEqWithDTMsg, getModuleName());
 }// end module JoinEqWithDTMsg

@@ -1,27 +1,27 @@
-#!/usr/bin/env python3                                                         
+#!/usr/bin/env python3
 
-import importlib
-import numpy as np
-import math
-import gc
 import sys
 
-from context import arkouda as ak
-from base_test import ArkoudaTest
+import numpy as np
+import pytest
+
+import arkouda as ak
 
 N = 1_000_000
 errors = False
 
+
 def pass_fail(f):
     global errors
     errors = errors or not f
-    return ("Passed" if f else "Failed")
+    return "Passed" if f else "Failed"
+
 
 def check_bool(N):
     a = ak.arange(N)
     b = ak.ones(N)
     try:
-        c = a and b
+        a and b
     except ValueError:
         correct = True
     except:
@@ -29,6 +29,7 @@ def check_bool(N):
     d = ak.array([1])
     correct = correct and (d and 5)
     return pass_fail(correct)
+
 
 def check_arange(N):
     # create np version
@@ -40,6 +41,7 @@ def check_arange(N):
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_linspace(N):
     # create np version
     a = np.linspace(10, 20, N)
@@ -48,6 +50,7 @@ def check_linspace(N):
     # print(a,b)
     f = np.allclose(a, b.to_ndarray())
     return pass_fail(f)
+
 
 def check_ones(N):
     # create np version
@@ -59,6 +62,7 @@ def check_ones(N):
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_zeros(N):
     # create np version
     a = np.zeros(N)
@@ -68,6 +72,7 @@ def check_zeros(N):
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
+
 
 def check_argsort(N):
     # create np version
@@ -85,6 +90,7 @@ def check_argsort(N):
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_coargsort(N):
     # create np version
     a = np.arange(N)
@@ -101,6 +107,7 @@ def check_coargsort(N):
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_sort(N):
     # create np version
     a = np.arange(N)
@@ -115,6 +122,7 @@ def check_sort(N):
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_get_slice(N):
     # create np version
     a = np.ones(N)
@@ -125,6 +133,7 @@ def check_get_slice(N):
     # print(a,b)
     c = a == b.to_ndarray()
     return pass_fail(c.all())
+
 
 def check_set_slice_value(N):
     # create np version
@@ -137,6 +146,7 @@ def check_set_slice_value(N):
     c = a == b.to_ndarray()
     return pass_fail(c.all())
 
+
 def check_set_slice(N):
     # create np version
     a = np.ones(N)
@@ -148,169 +158,180 @@ def check_set_slice(N):
     c = a == b.to_ndarray()
     return pass_fail(c.all())
 
+
 def check_get_bool_iv(N):
     # create np version
     a = np.arange(N)
-    a = a[a < N//2]
+    a = a[a < N // 2]
     # create ak version
     b = ak.arange(N)
-    b = b[b < N//2]
+    b = b[b < N // 2]
     # print(a,b)
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
+
 
 def check_set_bool_iv_value(N):
     # create np version
     a = np.arange(N)
-    a[a < N//2] = -1
+    a[a < N // 2] = -1
     # create ak version
     b = ak.arange(N)
-    b[b < N//2] = -1
+    b[b < N // 2] = -1
     # print(a,b)
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
+
 
 def check_set_bool_iv(N):
     # create np version
     a = np.arange(N)
-    a[a < N//2] = a[:N//2] * -1
+    a[a < N // 2] = a[: N // 2] * -1
     # create ak version
     b = ak.arange(N)
-    b[b < N//2] = b[:N//2] * -1
+    b[b < N // 2] = b[: N // 2] * -1
     # print(a,b)
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_get_integer_iv(N):
     # create np version
     a = np.arange(N)
-    iv = np.arange(N//2)
+    iv = np.arange(N // 2)
     a = a[iv]
     # create ak version
     b = ak.arange(N)
-    iv = ak.arange(N//2)
+    iv = ak.arange(N // 2)
     b = b[iv]
     # print(a,b)
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_set_integer_iv_value(N):
     # create np version
     a = np.arange(N)
-    iv = np.arange(N//2)
+    iv = np.arange(N // 2)
     a[iv] = -1
     # create ak version
     b = ak.arange(N)
-    iv = ak.arange(N//2)
+    iv = ak.arange(N // 2)
     b[iv] = -1
     # print(a,b)
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_set_integer_iv(N):
     # create np version
     a = np.arange(N)
-    iv = np.arange(N//2)
-    a[iv] = iv*10
+    iv = np.arange(N // 2)
+    a[iv] = iv * 10
     # create ak version
     b = ak.arange(N)
-    iv = ak.arange(N//2)
-    b[iv] = iv*10
+    iv = ak.arange(N // 2)
+    b[iv] = iv * 10
     # print(a,b)
     c = a == b.to_ndarray()
     # print(type(c),c)
     return pass_fail(c.all())
 
+
 def check_get_integer_idx(N):
     # create np version
     a = np.arange(N)
-    v1 = a[N//2]
+    v1 = a[N // 2]
     # create ak version
     b = ak.arange(N)
-    v2 = b[N//2]
+    v2 = b[N // 2]
     return pass_fail(v1 == v2) and pass_fail(a[-1] == b[-1])
+
 
 def check_set_integer_idx(N):
     # create np version
     a = np.arange(N)
-    a[N//2] = -1
+    a[N // 2] = -1
     a[-1] = -1
-    v1 = a[N//2]
+    v1 = a[N // 2]
     # create ak version
     b = ak.arange(N)
-    b[N//2] = -1
+    b[N // 2] = -1
     b[-1] = -1
-    v2 = b[N//2]
+    v2 = b[N // 2]
     return pass_fail(v1 == v2) and pass_fail(a[-1] == b[-1])
 
-'''
-Encapsulates test cases that invoke the run_tests method.
-'''
-class CheckTest(ArkoudaTest):
-    
-    def testBool(self):
-        self.assertTrue(check_bool(N))
-    
-    def testArange(self):
-        self.assertTrue(check_arange(N))
-        
-    def testLinspace(self):
-        self.assertTrue(check_linspace(N))
-        
-    def testOnes(self):
-        self.assertTrue(check_ones(N))
-        
-    def testZeros(self):
-        self.assertTrue(check_zeros(N))
-        
-    def testArgsort(self):
-        self.assertTrue(check_argsort(N))
-        
-    def testCoargsort(self):
-        self.assertTrue(check_coargsort(N))
-        
-    def testSort(self):
-        self.assertTrue(check_sort(N))
-        
-    def testGetSlice(self):
-        self.assertTrue(check_get_slice(N))
-        
-    def testSetSliceValue(self):
-        self.assertTrue(check_set_slice_value(N))
-        
-    def testSetSlice(self):
-        self.assertTrue(check_set_slice(N))
-        
-    def testGetBoolIv(self):
-        self.assertTrue(check_get_bool_iv(N))
-        
-    def testGetBoolIvValue(self):
-        self.assertTrue(check_set_bool_iv_value(N))
-        
-    def testSetBoolIv(self):
-        self.assertTrue(check_set_bool_iv(N))
-        
-    def testGetIntegerIv(self):
-        self.assertTrue(check_get_integer_iv(N))
-        
-    def testSetIntegerIvValue(self):
-        self.assertTrue(check_set_integer_iv_value(N))
-        
-    def testSetIntegerIv(self):
-        self.assertTrue(check_set_integer_iv(N))
-        
-    def testGetIntegerIdx(self):
-        self.assertTrue(check_get_integer_idx(N))
-        
-    def testSetIntegerIdx(self):
-        self.assertTrue(check_set_integer_idx(N))
 
-if __name__ == '__main__':
+"""
+Encapsulates test cases that invoke the run_tests method.
+"""
+
+
+class TestCheck:
+    def testBool(self):
+        assert check_bool(N)
+
+    def testArange(self):
+        assert check_arange(N)
+
+    def testLinspace(self):
+        assert check_linspace(N)
+
+    def testOnes(self):
+        assert check_ones(N)
+
+    def testZeros(self):
+        assert check_zeros(N)
+
+    def testArgsort(self):
+        assert check_argsort(N)
+
+    def testCoargsort(self):
+        assert check_coargsort(N)
+
+    def testSort(self):
+        assert check_sort(N)
+
+    def testGetSlice(self):
+        assert check_get_slice(N)
+
+    def testSetSliceValue(self):
+        assert check_set_slice_value(N)
+
+    def testSetSlice(self):
+        assert check_set_slice(N)
+
+    def testGetBoolIv(self):
+        assert check_get_bool_iv(N)
+
+    def testGetBoolIvValue(self):
+        assert check_set_bool_iv_value(N)
+
+    def testSetBoolIv(self):
+        assert check_set_bool_iv(N)
+
+    def testGetIntegerIv(self):
+        assert check_get_integer_iv(N)
+
+    def testSetIntegerIvValue(self):
+        assert check_set_integer_iv_value(N)
+
+    def testSetIntegerIv(self):
+        assert check_set_integer_iv(N)
+
+    def testGetIntegerIdx(self):
+        assert check_get_integer_idx(N)
+
+    def testSetIntegerIdx(self):
+        assert check_set_integer_idx(N)
+
+
+if __name__ == "__main__":
     N = 1_000_000
     print(">>> Sanity checks on the arkouda_server")
 
@@ -343,4 +364,3 @@ if __name__ == '__main__':
 
     ak.disconnect()
     sys.exit(errors)
-    

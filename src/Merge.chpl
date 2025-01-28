@@ -1,13 +1,14 @@
 module Merge {
   use IO;
-  use SegmentedArray;
+  use SegmentedString;
   use RadixSortLSD only numTasks, calcBlock;
   use Reflection;
   use ServerConfig;
   use Logging;
   
   private config const logLevel = ServerConfig.logLevel;
-  const mLogger = new Logger(logLevel);
+  private config const logChannel = ServerConfig.logChannel;
+  const mLogger = new Logger(logLevel, logChannel);
   
   /* Given a *sorted*, zero-up array, use binary search to find the index of the first element 
    * that is greater than or equal to a target.
@@ -89,7 +90,7 @@ module Merge {
               var smallS = small[smallPos];
               if (numLocales == 1) { 
                   mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                  "Task %t init: bigPos = %t, smallPos = %t, outPos = %t, end = %t, outOffset = %t, bigS = %s, smallS = %s".format(
+                  "Task %? init: bigPos = %?, smallPos = %?, outPos = %?, end = %?, outOffset = %?, bigS = %s, smallS = %s".format(
                             task, bigPos, smallPos, outPos, end, outOffset, bigS, smallS)); 
               }
               // leapfrog the two arrays until all the output has been filled
@@ -99,15 +100,15 @@ module Merge {
               
                       if (outPos > perm.domain.high) { 
                       mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                          "OOB: outPos = %t not in %t".format(outPos, perm.domain));
+                                          "OOB: outPos = %? not in %?".format(outPos, perm.domain));
                   }
-                  if (bigPos > big.offsets.aD.high) { 
+                  if (bigPos > big.offsets.a.domain.high) { 
                       mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                          "OOB: bigPos = %t not in %t".format(bigPos, big.offsets.aD));
+                                          "OOB: bigPos = %? not in %?".format(bigPos, big.offsets.a.domain));
                   }
                   if (outOffset + bigS.numBytes >= vals.size) { 
                       mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                           "OOB: (outOffset = %t + bigS.numBytes = %t) not in %t".format(
+                           "OOB: (outOffset = %? + bigS.numBytes = %?) not in %?".format(
                                                                outOffset, bigS.numBytes, vals.domain));
                   }
                   if bigIsLeft {
@@ -129,15 +130,15 @@ module Merge {
              while (smallPos <= smallEnd) && ((bigPos > bigEnd) || (smallS < bigS)) {          
                 if (outPos > perm.domain.high) { 
                     mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                               "OOB: outPos = %t not in %t".format(outPos, perm.domain));
+                               "OOB: outPos = %? not in %?".format(outPos, perm.domain));
                 }
-                if (smallPos > small.offsets.aD.high) { 
+                if (smallPos > small.offsets.a.domain.high) { 
                     mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                               "OOB: smallPos = %t not in %t".format(smallPos, small.offsets.aD));
+                               "OOB: smallPos = %? not in %?".format(smallPos, small.offsets.a.domain));
                 }
                 if (outOffset + bigS.numBytes >= vals.size) {
                     mLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                               "OOB: (outOffset = %t + smallS.numBytes = %t) not in %t".format(
+                               "OOB: (outOffset = %? + smallS.numBytes = %?) not in %?".format(
                                outOffset, smallS.numBytes, vals.domain));
                 }
             }

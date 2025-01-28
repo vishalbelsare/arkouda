@@ -3,7 +3,7 @@ module ServerErrorStrings
 {
     use NumPyDType;
     use IO;
-    
+
     class ErrorWithMsg: Error {
       var msg: string;
     }
@@ -27,7 +27,19 @@ module ServerErrorStrings
                                                               efunc,
                                                               dtype2str(ldtype));
     }
+    proc notImplementedError(pname: string, efunc: string, ldtype: DType, param nd: int):string {
+        return try! "Error: %s: %s %s not implemented for nd = %i".format(pname,
+                                                                            efunc,
+                                                                            dtype2str(ldtype),
+                                                                            nd);
+    }
     /* efunc is not implemented for DTypes */
+    proc notImplementedError(pname: string, efunc: string, dt1: DType, dt2: DType): string {
+      return try! "Error: %s: %s %s %s not implemented".format(pname,
+                                                                  efunc,
+                                                                  dtype2str(dt1),
+                                                                  dtype2str(dt2));
+    }
     proc notImplementedError(pname: string, efunc: string, dt1: DType, dt2: DType, dt3: DType): string {
       return try! "Error: %s: %s %s %s %s not implemented".format(pname,
                                                                   efunc,
@@ -67,6 +79,13 @@ module ServerErrorStrings
       return try! "Error: %s: Incompatible arguments: %s".format(pname, reason);
     }
 
-    
-}
+    proc unsupportedTypeError(dtype: DType, pname: string): string {
+      return try!
+        "Error: server not configured to support '%s' (in %s). Please update the configuration and recompile."
+        .format(dtype2str(dtype), pname);
+    }
 
+    proc unsupportedTypeError(type t, pname: string): string {
+      return unsupportedTypeError(whichDtype(t), pname);
+    }
+}

@@ -14,6 +14,8 @@ __pycache__/
 .vscode/
 .local/
 .idea/
+.project
+.pydevproject
 doc/
 docs/
 test-bin/
@@ -34,3 +36,16 @@ test/IOSpeedTestMsg.good
 test/NanSpeedTest.good
 test/StringArgsortSpeedTest.good
 test/file_LOCALE0000
+UsedModules.cfg
+.flake8
+.DS_Store
+*/.benchmarks
+*/.pytest_cache
+.cls-commands.json
+arkouda/*.pyi
+arkouda/numpy/*.pyi
+arkouda/scipy/*.pyi
+arkouda/scipy/stats/*.pyi
+benchmark_v2/data/*
+benchmark_v2/datdir/*.dat
+benchmark_v2/datdir/html/*

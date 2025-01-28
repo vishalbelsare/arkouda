@@ -1,16 +1,18 @@
 module ConcatenateMsg
 {
     use ServerConfig;
-    
-    use Time only;
+
+    use Time;
     use Math only;
     use Reflection;
     use ServerErrors;
     use Logging;
     use Message;
+    use BigInteger;
     
     use MultiTypeSymbolTable;
     use MultiTypeSymEntry;
+    use SegmentedString;
     use ServerErrorStrings;
     use CommAggregation;
     use PrivateDist;
@@ -18,22 +20,22 @@ module ConcatenateMsg
     use AryUtil;
     
     private config const logLevel = ServerConfig.logLevel;
-    const cmLogger = new Logger(logLevel);
+    private config const logChannel = ServerConfig.logChannel;
+    const cmLogger = new Logger(logLevel, logChannel);
 
     /* Concatenate a list of arrays together
        to form one array
      */
-    proc concatenateMsg(cmd: string, payload: string, st: borrowed SymTab) : MsgTuple throws {
+    proc concatenateMsg(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab) : MsgTuple throws {
         param pn = Reflection.getRoutineName();
         var repMsg: string;
-        var (nstr, objtype, mode, rest) = payload.splitMsgToTuple(4);
-        var n = try! nstr:int; // number of arrays to sort
-        var fields = rest.split();
-        const low = fields.domain.low;
-        var names = fields[low..];
+        var objtype = msgArgs.getValueOf("objType").toUpper(): ObjType;
+        var mode = msgArgs.getValueOf("mode");
+        var n = msgArgs.get("nstr").getIntValue(); // number of arrays to sort
+        var names = msgArgs.get("names").getList(n);
         
         cmLogger.debug(getModuleName(),getRoutineName(), getLineNumber(), 
-              "number of arrays: %i fields: %t low: %t names: %t".format(n,fields,low,names));
+              "number of arrays: %i names: %?".format(n,names));
 
         // Check that fields contains the stated number of arrays
         if (n != names.size) { 
@@ -49,18 +51,15 @@ module ConcatenateMsg
         var nbytes: int = 0;          
         var dtype: DType;
         // Check that all arrays exist in the symbol table and have the same size
-        for (rawName, i) in zip(names, 1..) {
-            // arrays[i] = st.lookup(name): borrowed GenSymEntry;
-            var name: string;
+        for (name, i) in zip(names, 1..) {
             var valSize: int;
             select objtype {
-                when "str" {
-                    var valName: string;
-                    (name, valName) = rawName.splitMsgToTuple('+', 2);
-                    try { 
-                        var gval = st.lookup(valName);
-                        nbytes += gval.size;
-                        valSize = gval.size;
+                when ObjType.STRINGS {
+                    try {
+                        // get the values/bytes portion of strings
+                        var segString = getSegString(name, st);
+                        nbytes += segString.nBytes;
+                        valSize = segString.nBytes;
                     } catch e: Error {
                         throw getErrorWithContext(
                            msg="lookup for %s failed".format(name),
@@ -70,46 +69,39 @@ module ConcatenateMsg
                            errorClass="UnknownSymbolError");                    
                     }
                     cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                             "name: %s valName: %s".format(name,valName));
+                                             "name: %s".format(name));
                 }
-                when "pdarray" {
-                    name = rawName;
+                when ObjType.PDARRAY {
                     cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                 "pdarray name %s".format(rawName));
+                                 "pdarray name %s".format(name));
                 }
                 otherwise { 
-                    var errorMsg = notImplementedError(pn, objtype); 
+                    var errorMsg = notImplementedError(pn, objtype: string); 
                     cmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
                     return new MsgTuple(errorMsg,MsgType.ERROR);                  
                 }
             }
-            var g: borrowed GenSymEntry;
+
+            st.checkTable(name, "concatenateMsg");
+            var abstractEntry = st.lookup(name);
+            var (entryDtype, entrySize, entryItemSize) = getArraySpecFromEntry(abstractEntry);
             
-            try { 
-                g = st.lookup(name);
-            } catch e : Error {
-                throw getErrorWithContext(
-                           msg="lookup for %s failed".format(name),
-                           lineNumber=getLineNumber(),
-                           routineName=getRoutineName(), 
-                           moduleName=getModuleName(),
-                           errorClass="UnknownSymbolError");
-            }
-            if (i == 1) {dtype = g.dtype;}
-            else {
-                if (dtype != g.dtype) {
+            if (i == 1) {
+              dtype = entryDtype;
+            } else { // Check that all dtype's are the same across the list of arrays to concat
+                if (dtype != entryDtype) {
                     var errorMsg = incompatibleArgumentsError(pn, 
                              "Expected %s dtype but got %s dtype".format(dtype2str(dtype), 
-                                    dtype2str(g.dtype)));
+                                    dtype2str(entryDtype)));
                     cmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
                     return new MsgTuple(errorMsg,MsgType.ERROR);
                 }
             }
             // accumulate size from each array size
-            size += g.size;
+            size += entrySize;
             if mode == "interleave" {
-              const dummyDomain = makeDistDom(g.size);
-              coforall loc in Locales {
+              const dummyDomain = makeDistDom(entrySize);
+              coforall loc in Locales with (ref blocksizes, ref blockValSizes) {
                 on loc {
                   const mynumsegs = dummyDomain.localSubdomain().size;
                   blocksizes[here.id] += mynumsegs;
@@ -119,19 +111,20 @@ module ConcatenateMsg
                    * but it also causes an out of bounds array index due to the 
                    * way the low and high of the empty domain are computed. 
                    */
-                  if (objtype == "str") && (mynumsegs > 0) {
-                    const e = toSymEntry(g, int);
-                    const firstSeg = e.a[e.aD.localSubdomain().low];
+                  if (objtype == ObjType.STRINGS) && (mynumsegs > 0) {
+                    const stringEntry = toSegStringSymEntry(abstractEntry);
+                    const e = stringEntry.offsetsEntry;
+                    const firstSeg = e.a[e.a.domain.localSubdomain().low];
                     var mybytes: int;
                     /* If this locale contains the last segment, we cannot use the
                      * next segment offset to calculate the number of bytes for this
                      * locale, and we must instead use the total size of the values
                      * array.
                      */
-                    if (e.aD.localSubdomain().high >= e.aD.high) {
+                    if (e.a.domain.localSubdomain().high >= e.a.domain.high) {
                       mybytes = valSize - firstSeg;
                     } else {
-                      mybytes = e.a[e.aD.localSubdomain().high + 1] - firstSeg;
+                      mybytes = e.a[e.a.domain.localSubdomain().high + 1] - firstSeg;
                     }
                     blockValSizes[here.id] += mybytes;
                   }
@@ -154,42 +147,49 @@ module ConcatenateMsg
         // allocate a new array in the symboltable
         // and copy in arrays
         select objtype {
-            when "str" {
-                var segName = st.nextName();
-                var esegs = st.addEntry(segName, size, int);
+            when ObjType.STRINGS {
+                // var segName = st.nextName();
+                // var esegs = st.addEntry(segName, size, int);
+                // var valName = st.nextName();
+                // var evals = st.addEntry(valName, nbytes, uint(8));
+                // Allocate the two components of a Segmented
+                var esegs = createTypedSymEntry(size, int);
+                var evals = createTypedSymEntry(nbytes, uint(8));
                 ref esa = esegs.a;
-                var valName = st.nextName();
-                var evals = st.addEntry(valName, nbytes, uint(8));
                 ref eva = evals.a;
                 var segStart = 0;
                 var valStart = 0;
+
+                // Let's allocate a new SegString for the return object
+                var retString = assembleSegStringFromParts(esegs, evals, st);
                 for (rawName, i) in zip(names, 1..) {
-                    var (segName, valName) = rawName.splitMsgToTuple('+', 2);
-                    var thisSegs = toSymEntry(st.lookup(segName), int);
+                    var (strName, legacy_placerholder) = rawName.splitMsgToTuple('+', 2);
+                    var segString = getSegString(strName, st);
+                    var thisSegs = segString.offsets;
                     var newSegs = thisSegs.a + valStart;
-                    var thisVals = toSymEntry(st.lookup(valName), uint(8));
+                    var thisVals = segString.values;
                     if mode == "interleave" {
-                      coforall loc in Locales {
+                      coforall loc in Locales with (ref blockstarts, ref blockValStarts) {
                         on loc {
                           // Number of strings on this locale for this input array
-                          const mynsegs = thisSegs.aD.localSubdomain().size;
+                          const mynsegs = thisSegs.a.domain.localSubdomain().size;
                           // If no strings on this locale, skip to avoid out of bounds array
                           // accesses
                           if mynsegs > 0 {
-                            ref mysegs = thisSegs.a.localSlice[thisSegs.aD.localSubdomain()];
+                            ref mysegs = thisSegs.a.localSlice[thisSegs.a.domain.localSubdomain()];
                             // Segments must be rebased to start from blockValStart,
                             // which is the current pointer to this locale's chunk of
                             // the values array
-                            esegs.a[{blockstarts[here.id]..#mynsegs}] = mysegs - mysegs[thisSegs.aD.localSubdomain().low] + blockValStarts[here.id];
+                            esegs.a[{blockstarts[here.id]..#mynsegs}] = mysegs - mysegs[thisSegs.a.domain.localSubdomain().low] + blockValStarts[here.id];
                             blockstarts[here.id] += mynsegs;
-                            const firstSeg = thisSegs.a[thisSegs.aD.localSubdomain().low];
+                            const firstSeg = thisSegs.a[thisSegs.a.domain.localSubdomain().low];
                             var mybytes: int;
                             // If locale contains last string, must use overall number of bytes
                             // to compute size, instead of start of next string
-                            if (thisSegs.aD.localSubdomain().high >= thisSegs.aD.high) {
+                            if (thisSegs.a.domain.localSubdomain().high >= thisSegs.a.domain.high) {
                               mybytes = thisVals.size - firstSeg;
                             } else {
-                              mybytes = thisSegs.a[thisSegs.aD.localSubdomain().high + 1] - firstSeg;
+                              mybytes = thisSegs.a[thisSegs.a.domain.localSubdomain().high + 1] - firstSeg;
                             }
                             evals.a[{blockValStarts[here.id]..#mybytes}] = thisVals.a[firstSeg..#mybytes];
                             blockValStarts[here.id] += mybytes;
@@ -200,22 +200,23 @@ module ConcatenateMsg
                       forall (i, s) in zip(newSegs.domain, newSegs) with (var agg = newDstAggregator(int)) {
                         agg.copy(esa[i+segStart], s);
                       }
-                      forall (i, v) in zip(thisVals.aD, thisVals.a) with (var agg = newDstAggregator(uint(8))) {
+                      forall (i, v) in zip(thisVals.a.domain, thisVals.a) with (var agg = newDstAggregator(uint(8))) {
                         agg.copy(eva[i+valStart], v);
                       }
                       segStart += thisSegs.size;
                       valStart += thisVals.size;
                     }
                 }
-                var repMsg = "created " + st.attrib(segName) + "+created " + st.attrib(valName);
+                var repMsg = "created " + st.attrib(retString.name) + "+created bytes.size %?".format(retString.nBytes);
+                // var repMsg = "created " + st.attrib(retString.name) + "+created " + st.attrib(retString.name);
                 cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                                  "created concatenated pdarray %s".format(st.attrib(valName)));
+                                  "created concatenated pdarray %s".format(st.attrib(retString.name)));
                 return new MsgTuple(repMsg, MsgType.NORMAL);
             }
-            when "pdarray" {
+            when ObjType.PDARRAY {
                 var rname = st.nextName();
                 cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(), 
-                                             "creating pdarray %s of type %t".format(rname,dtype));
+                                             "creating pdarray %s of type %?".format(rname,dtype));
                 select (dtype) {
                     when DType.Int64 {
                         // create array to copy into
@@ -224,19 +225,19 @@ module ConcatenateMsg
                         start = 0;
                         for (name, i) in zip(names, 1..) {
                             // lookup and cast operand to copy from
-                            const o = toSymEntry(st.lookup(name), int);
+                            const o = toSymEntry(getGenericTypedArrayEntry(name, st), int);
                             if mode == "interleave" {
-                              coforall loc in Locales {
+                              coforall loc in Locales with (ref blockstarts) {
                                 on loc {
-                                  const size = o.aD.localSubdomain().size;
-                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.aD.localSubdomain()];
+                                  const size = o.a.domain.localSubdomain().size;
+                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.a.domain.localSubdomain()];
                                   blockstarts[here.id] += size;
                                 }
                               }
                             } else {
                               ref ea = e.a;
                               // copy array into concatenation array
-                              forall (i, v) in zip(o.aD, o.a) with (var agg = newDstAggregator(int)) {
+                              forall (i, v) in zip(o.a.domain, o.a) with (var agg = newDstAggregator(int)) {
                                 agg.copy(ea[start+i], v);
                               }
                               // update new start for next array copy
@@ -253,19 +254,19 @@ module ConcatenateMsg
                         start = 0;
                         for (name, i) in zip(names, 1..) {
                             // lookup and cast operand to copy from
-                            const o = toSymEntry(st.lookup(name), real);
+                            const o = toSymEntry(getGenericTypedArrayEntry(name, st), real);
                             if mode == "interleave" {
-                              coforall loc in Locales {
+                              coforall loc in Locales with (ref blockstarts) {
                                 on loc {
-                                  const size = o.aD.localSubdomain().size;
-                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.aD.localSubdomain()];
+                                  const size = o.a.domain.localSubdomain().size;
+                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.a.domain.localSubdomain()];
                                   blockstarts[here.id] += size;
                                 }
                               }
                             } else {
                               ref ea = e.a;
                               // copy array into concatenation array
-                              forall (i, v) in zip(o.aD, o.a) with (var agg = newDstAggregator(real)) {
+                              forall (i, v) in zip(o.a.domain, o.a) with (var agg = newDstAggregator(real)) {
                                 agg.copy(ea[start+i], v);
                               }
                               // update new start for next array copy
@@ -282,19 +283,19 @@ module ConcatenateMsg
                         start = 0;
                         for (name, i) in zip(names, 1..) {
                             // lookup and cast operand to copy from
-                            const o = toSymEntry(st.lookup(name), bool);
+                            const o = toSymEntry(getGenericTypedArrayEntry(name, st), bool);
                             if mode == "interleave" {
-                              coforall loc in Locales {
+                              coforall loc in Locales with (ref blockstarts) {
                                 on loc {
-                                  const size = o.aD.localSubdomain().size;
-                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.aD.localSubdomain()];
+                                  const size = o.a.domain.localSubdomain().size;
+                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.a.domain.localSubdomain()];
                                   blockstarts[here.id] += size;
                                 }
                               }
                             } else {
                               ref ea = e.a;
                               // copy array into concatenation array
-                              forall (i, v) in zip(o.aD, o.a) with (var agg = newDstAggregator(bool)) {
+                              forall (i, v) in zip(o.a.domain, o.a) with (var agg = newDstAggregator(bool)) {
                                 agg.copy(ea[start+i], v);
                               }
                               // update new start for next array copy
@@ -303,6 +304,74 @@ module ConcatenateMsg
                         }
                         cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
                                            "created concatenated pdarray: %s".format(st.attrib(rname)));
+                    }
+                    when DType.UInt64 {
+                        // create array to copy into
+                        var e = st.addEntry(rname, size, uint);
+                        var start: int;
+                        start = 0;
+                        for (name, i) in zip(names, 1..) {
+                            // lookup and cast operand to copy from
+                            const o = toSymEntry(getGenericTypedArrayEntry(name, st), uint);
+                            if mode == "interleave" {
+                              coforall loc in Locales with (ref blockstarts) {
+                                on loc {
+                                  const size = o.a.domain.localSubdomain().size;
+                                  e.a[{blockstarts[here.id]..#size}] = o.a.localSlice[o.a.domain.localSubdomain()];
+                                  blockstarts[here.id] += size;
+                                }
+                              }
+                            } else {
+                              ref ea = e.a;
+                              // copy array into concatenation array
+                              forall (i, v) in zip(o.a.domain, o.a) with (var agg = newDstAggregator(uint)) {
+                                agg.copy(ea[start+i], v);
+                              }
+                              // update new start for next array copy
+                              start += o.size;
+                            }
+                        }
+                        cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
+                                         "created concatenated pdarray: %s".format(st.attrib(rname)));
+                    }
+                    when DType.BigInt {
+                        // create array to copy into
+                        var tmp = makeDistArray(size, bigint);
+                        var start: int = 0;
+                        var max_bits = -1;
+                        for (name, i) in zip(names, 1..) {
+                            // lookup and cast operand to copy from
+                            const o = toSymEntry(getGenericTypedArrayEntry(name, st), bigint);
+                            max_bits = max(max_bits, o.max_bits);
+                            if mode == "interleave" {
+                              coforall loc in Locales with (ref blockstarts) {
+                                on loc {
+                                  const size = o.a.domain.localSubdomain().size;
+                                  tmp[{blockstarts[here.id]..#size}] = o.a.localSlice[o.a.domain.localSubdomain()];
+                                  blockstarts[here.id] += size;
+                                }
+                              }
+                            } else {
+                              ref ea = tmp;
+                              // copy array into concatenation array
+                              forall (i, v) in zip(o.a.domain, o.a) with (var agg = newDstAggregator(bigint)) {
+                                agg.copy(ea[start+i], v);
+                              }
+                              // update new start for next array copy
+                              start += o.size;
+                            }
+                        }
+                        if max_bits != -1 {
+                          var max_size = 1:bigint;
+                          max_size <<= max_bits;
+                          max_size -= 1;
+                          forall t in tmp with (var local_max_size = max_size) {
+                            t &= local_max_size;
+                          }
+                        }
+                        st.addEntry(rname, createSymEntry(tmp, max_bits));
+                        cmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
+                                         "created concatenated pdarray: %s".format(st.attrib(rname)));
                     }
                     otherwise {
                         var errorMsg = notImplementedError("concatenate",dtype);
@@ -316,10 +385,13 @@ module ConcatenateMsg
                 return new MsgTuple(repMsg, MsgType.NORMAL);
             }
             otherwise { 
-                var errorMsg = notImplementedError(pn, objtype); 
+                var errorMsg = notImplementedError(pn, objtype: string); 
                 cmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
                 return new MsgTuple(errorMsg, MsgType.ERROR);
             }
         }
     }
+
+    use CommandMap;
+    registerFunction("concatenate", concatenateMsg, getModuleName());
 }

@@ -3,11 +3,12 @@ module OperatorMsg
 {
     use ServerConfig;
 
-    use Time;
     use Math;
     use BitOps;
     use Reflection;
     use ServerErrors;
+    use BinOp;
+    use BigInteger;
 
     use MultiTypeSymbolTable;
     use MultiTypeSymEntry;
@@ -15,1685 +16,1492 @@ module OperatorMsg
     use Reflection;
     use Logging;
     use Message;
-    
+
+    use Time;
+
     private config const logLevel = ServerConfig.logLevel;
-    const omLogger = new Logger(logLevel);
-    
+    private config const logChannel = ServerConfig.logChannel;
+    const omLogger = new Logger(logLevel, logChannel);
+
     /*
-    Parse and respond to binopvv message.
-    vv == vector op vector
+      Parse and respond to binopvv message.
+      vv == vector op vector
 
-    :arg reqMsg: request containing (cmd,op,aname,bname,rname)
-    :type reqMsg: string 
+      :arg reqMsg: request containing (cmd,op,aname,bname)
+      :type reqMsg: string 
 
-    :arg st: SymTab to act on
-    :type st: borrowed SymTab 
+      :arg st: SymTab to act on
+      :type st: borrowed SymTab 
 
-    :returns: (MsgTuple) 
-    :throws: `UndefinedSymbolError(name)`
+      :returns: (MsgTuple) 
+      :throws: `UndefinedSymbolError(name)`
     */
-    proc binopvvMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {       
+    @arkouda.instantiateAndRegister
+    proc binopvv(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab,
+      type binop_dtype_a,
+      type binop_dtype_b,
+      param array_nd: int
+    ): MsgTuple throws {
         param pn = Reflection.getRoutineName();
-        var repMsg: string; // response message
 
-        // split request into fields
-        var (op, aname, bname) = payload.splitMsgToTuple(3);
+        const l = st[msgArgs['a']]: borrowed SymEntry(binop_dtype_a, array_nd),
+              r = st[msgArgs['b']]: borrowed SymEntry(binop_dtype_b, array_nd),
+              op = msgArgs['op'].toScalar(string);
 
-        var rname = st.nextName();
-        var left: borrowed GenSymEntry = st.lookup(aname);
-        var right: borrowed GenSymEntry = st.lookup(bname);
-        
         omLogger.debug(getModuleName(), getRoutineName(), getLineNumber(), 
-             "cmd: %t op: %t left pdarray: %t right pdarray: %t".format(
-                                          cmd,op,st.attrib(aname),st.attrib(bname)));
+             "cmd: %? op: %? left pdarray: %? right pdarray: %?".format(
+                                          cmd,op,st.attrib(msgArgs['a'].val),
+                                          st.attrib(msgArgs['b'].val)));
 
-        select (left.dtype, right.dtype) {
-            when (DType.Int64, DType.Int64) {
-                var l = toSymEntry(left,int);
-                var r = toSymEntry(right,int);
-                select op
-                {
-                    when "+" {
-                        // new way: no extra copy!
-                        // 1) insert new entry into generic symbol table and
-                        //    return a borrow to that entry in the table
-                        var e = st.addEntry(rname, l.size, int);
-                        // 2) do operation writing the result inplace into the symbol table entry's array
-                        e.a = l.a + r.a;
-                        
-                        /* // old way: extra copy! */
-                        /* // 1) does operation creating a new array result */
-                        /* var a = l.a + r.a; */
-                        /* // 2) copies result array into a new symbol table entry array */
-                        /* st.addEntry(rname, new shared SymEntry(a)); */
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real / r.a:real;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, int);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(ei,li,ri) in zip(ea,la,ra)] ei = if ri != 0 then li/ri else 0;
-                    }
-                    when "%" { // modulo
-                        var e = st.addEntry(rname, l.size, int);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(ei,li,ri) in zip(ea,la,ra)] ei = if ri != 0 then li%ri else 0;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != r.a;
-                    }
-                    when "<<" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a << r.a;
-                    }                    
-                    when ">>" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a >> r.a;
-                    }
-                    when "<<<" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = rotl(l.a, r.a);
-                    }
-                    when ">>>" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = rotr(l.a, r.a);
-                    }
-                    when "&" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a & r.a;
-                    }                    
-                    when "|" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a | r.a;
-                    }                    
-                    when "^" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a ^ r.a;
-                    }    
-                    when "**" { 
-                        if || reduce (r.a<0){
-                            //instead of error, could we paste the below code but of type float?
-                            var errorMsg = "Attempt to exponentiate base of type Int64 to negative exponent";
-                            omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                            return new MsgTuple(errorMsg, MsgType.ERROR);                                
-                        }
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a= l.a**r.a;
-                    }     
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                              
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Int64, DType.Float64) {
-                var l = toSymEntry(left,int);
-                var r = toSymEntry(right,real);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real / r.a;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, real);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(ei,li,ri) in zip(ea,la,ra)] ei = if ri != 0 then floor(li:real/ri) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != r.a;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a= l.a**r.a;
-                    }    
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                             
-                    }
-                }
-            }
-            when (DType.Float64, DType.Int64) {
-                var l = toSymEntry(left,real);
-                var r = toSymEntry(right,int);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a / r.a:real;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, real);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(ei,li,ri) in zip(ea,la,ra)] ei = if ri != 0 then floor(li/ri:real) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != r.a;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a= l.a**r.a;
-                    }      
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);    
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            when (DType.Float64, DType.Float64) {
-                var l = toSymEntry(left,real);
-                var r = toSymEntry(right,real);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a / r.a;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, real);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(ei,li,ri) in zip(ea,la,ra)] ei = if ri != 0 then floor(li/ri) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != r.a;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a= l.a**r.a;
-                    }     
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Bool, DType.Bool) {
-                var l = toSymEntry(left, bool);
-                var r = toSymEntry(right, bool);
-                select op {
-                    when "|" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a | r.a;
-                    }
-                    when "&" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a & r.a;
-                    }
-                    when "^" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a ^ r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != r.a;
-                    }                 
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);   
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            when (DType.Bool, DType.Int64) {
-                var l = toSymEntry(left, bool);
-                var r = toSymEntry(right, int);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a:int + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a:int - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a:int * r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                             
-                    }
-                }
-            }
-            when (DType.Int64, DType.Bool) {
-                var l = toSymEntry(left, int);
-                var r = toSymEntry(right, bool);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a + r.a:int;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a - r.a:int;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a * r.a:int;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                        return new MsgTuple(errorMsg, MsgType.ERROR);  
-                    }
-                }
-            }
-            when (DType.Bool, DType.Float64) {
-                var l = toSymEntry(left, bool);
-                var r = toSymEntry(right, real);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real * r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                               
-                    }
-                }
-            }
-            when (DType.Float64, DType.Bool) {
-                var l = toSymEntry(left, real);
-                var r = toSymEntry(right, bool);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + r.a:real;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - r.a:real;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * r.a:real;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                        return new MsgTuple(errorMsg, MsgType.ERROR);        
-                    }
-                }
-            }
-            otherwise {
-                var errorMsg = unrecognizedTypeError(pn,
-                                  "("+dtype2str(left.dtype)+","+dtype2str(right.dtype)+")");
-                omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);  
-                return new MsgTuple(errorMsg, MsgType.ERROR);                                          
-            }
+        use Set;
+        // This boolOps set is a filter to determine the output type for the operation.
+        // All operations that involve one of these operations result in a `bool` symbol
+        // table entry.
+        var boolOps: set(string);
+        boolOps.add("<");
+        boolOps.add("<=");
+        boolOps.add(">");
+        boolOps.add(">=");
+        boolOps.add("==");
+        boolOps.add("!=");
+
+        var realOps: set(string);
+        realOps.add("+");
+        realOps.add("-");
+        realOps.add("/");
+        realOps.add("//");
+
+        if binop_dtype_a == int && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          } else if op == "/" {
+            // True division is the only case in this int, int case
+            // that results in a `real` symbol table entry.
+            return doBinOpvv(l, r, real, op, pn, st);
+          }
+          return doBinOpvv(l, r, int, op, pn, st);
+        } else if binop_dtype_a == int && binop_dtype_b == real {
+          // Only two possible resultant types are `bool` and `real`
+          // for this case
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
         }
-
-        repMsg = "created %s".format(st.attrib(rname));
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
-        return new MsgTuple(repMsg, MsgType.NORMAL);
-    }
-    /*
-    Parse and respond to binopvs message.
-    vs == vector op scalar
-
-    :arg reqMsg: request containing (cmd,op,aname,dtype,value)
-    :type reqMsg: string 
-
-    :arg st: SymTab to act on
-    :type st: borrowed SymTab 
-
-    :returns: (MsgTuple) 
-    :throws: `UndefinedSymbolError(name)`
-    */
-    proc binopvsMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
-        param pn = Reflection.getRoutineName();
-        var repMsg: string = ""; // response message
-
-        // split request into fields
-        var (op, aname, dtypeStr, value) = payload.splitMsgToTuple(4);
-
-        var dtype = str2dtype(dtypeStr);
-        var rname = st.nextName();
-        var left: borrowed GenSymEntry = st.lookup(aname);
-
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                           "op: %s dtype: %t pdarray: %t scalar: %t".format(
-                                                     op,dtype,st.attrib(aname),value));
-
-        select (left.dtype, dtype) {
-            when (DType.Int64, DType.Int64) {
-                var l = toSymEntry(left,int);
-                var val = try! value:int;
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a + val;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a - val;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a * val;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real / val:real;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, int);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        [(ei,li) in zip(ea,la)] ei = if val != 0 then li/val else 0;
-                    }
-                    when "%" { // modulo
-                        var e = st.addEntry(rname, l.size, int);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        [(ei,li) in zip(ea,la)] ei = if val != 0 then li%val else 0;
-                    } 
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < val;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > val;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= val;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= val;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == val;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != val;
-                    }
-                    when "<<" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a << val;
-                    }
-                    when ">>" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a >> val;
-                    }
-                    when "<<<" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = rotl(l.a, val);
-                    }
-                    when ">>>" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = rotr(l.a, val);
-                    }
-                    when "&" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a & val;
-                    }
-                    when "|" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a | val;
-                    }
-                    when "^" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a ^ val;
-                    }
-                    when "**" { 
-                        if (val<0){
-                            var errorMsg = "Attempt to exponentiate base of type Int64 to negative exponent";
-                            omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                                                             
-                            return new MsgTuple(errorMsg, MsgType.ERROR); 
-                        }
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a= l.a**val;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);       
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
-                }
-            }
-            when (DType.Int64, DType.Float64) {
-                var l = toSymEntry(left,int);
-                var val = try! value:real;
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + val;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - val;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * val;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real / val;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, real);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        [(ei,li) in zip(ea,la)] ei = if val != 0 then floor(li:real / val) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < val;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > val;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= val;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= val;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == val;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != val;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a= l.a**val;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                                
-                        return new MsgTuple(errorMsg, MsgType.ERROR);  
-                    }
-                }
-            }
-            when (DType.Float64, DType.Int64) {
-                var l = toSymEntry(left,real);
-                var val = try! value:int;
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + val;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - val;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * val;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a / val:real;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, real);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        [(ei,li) in zip(ea,la)] ei = if val != 0 then floor(li / val:real) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < val;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > val;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= val;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= val;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == val;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != val;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a= l.a**val;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);        
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
-                }
-            }
-            when (DType.Float64, DType.Float64) {
-                var l = toSymEntry(left,real);
-                var val = try! value:real;
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + val;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - val;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * val;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a / val;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, l.size, real);
-                        ref ea = e.a;
-                        ref la = l.a;
-                        [(ei,li) in zip(ea,la)] ei = if val != 0 then floor(li / val) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a < val;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a > val;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a <= val;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a >= val;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a == val;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a != val;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a= l.a**val;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                          
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                             
-                    }
-                }
-            }
-            when (DType.Bool, DType.Bool) {
-                var l = toSymEntry(left, bool);
-                var val = try! value.toLower():bool;
-                select op {
-                    when "|" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a | val;
-                    }
-                    when "&" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a & val;
-                    }
-                    when "^" {
-                        var e = st.addEntry(rname, l.size, bool);
-                        e.a = l.a ^ val;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);   
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                            
-                    }
-                }
-            }
-            when (DType.Bool, DType.Int64) {
-                var l = toSymEntry(left, bool);
-                var val = try! value:int;
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a:int + val;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a:int - val;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a:int * val;
-                    }
-                    otherwise {
-                         var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                         omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                        
-                         return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Int64, DType.Bool) {
-                var l = toSymEntry(left, int);
-                var val = try! value.toLower():bool;
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a + val:int;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a - val:int;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, int);
-                        e.a = l.a * val:int;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                        
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
-                }
-            }
-            when (DType.Bool, DType.Float64) {
-                var l = toSymEntry(left, bool);
-                var val = try! value:real;
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real + val;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real - val;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a:real * val;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                        
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                           
-                    }
-                }
-            }
-            when (DType.Float64, DType.Bool) {
-                var l = toSymEntry(left, real);
-                var val = try! value.toLower():bool;
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a + val:real;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a - val:real;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, l.size, real);
-                        e.a = l.a * val:real;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                        
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
-                }
-            }
-            otherwise {
-                 var errorMsg = unrecognizedTypeError(pn, 
-                                            "("+dtype2str(left.dtype)+","+dtype2str(dtype)+")");
-                 omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                        
-                 return new MsgTuple(errorMsg, MsgType.ERROR);                      
-            }
+        else if binop_dtype_a == real && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
         }
-        
-        repMsg = "created %s".format(st.attrib(rname));
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-             "created pdarray %t from %s with scalar %t on pdarray".format(
-                                                                    st.attrib(rname),op,value));
-        return new MsgTuple(repMsg, MsgType.NORMAL);
+        else if binop_dtype_a == uint && binop_dtype_b == real {
+          // Only two possible resultant types are `bool` and `real`
+          // for this case
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == real {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
+        }
+        // For cases where a boolean operand is involved, the only
+        // possible resultant type is `bool`
+        else if binop_dtype_a == bool && binop_dtype_b == bool {
+          if (op == "<<") || (op == ">>" ) {
+            return doBinOpvv(l, r, int, op, pn, st);
+          }
+          return doBinOpvv(l, r, bool, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, int, op, pn, st);
+        }
+        else if binop_dtype_a == int && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, int, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == real {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, uint, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          return doBinOpvv(l, r, uint, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          if op == "/"{
+            return doBinOpvv(l, r, real, op, pn, st);
+          } else {
+            return doBinOpvv(l, r, uint, op, pn, st);
+          }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r , bool, op, pn, st);
+          }
+          // +, -, /, // both result in real outputs to match NumPy
+          if realOps.contains(op) {
+            return doBinOpvv(l, r, real, op, pn, st);
+          } else {
+            // isn't +, -, /, // so we can use LHS to determine type
+            return doBinOpvv(l, r, uint, op, pn, st);
+          }
+        }
+        else if binop_dtype_a == int && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvv(l, r, bool, op, pn, st);
+          }
+          // +, -, /, // both result in real outputs to match NumPy
+          if realOps.contains(op) {
+            return doBinOpvv(l, r, real, op, pn, st);
+          } else {
+            // isn't +, -, /, // so we can use LHS to determine type
+            return doBinOpvv(l, r, int, op, pn, st);
+          }
+        }
+        else if (binop_dtype_a == bigint || binop_dtype_b == bigint) &&
+                !isRealType(binop_dtype_a) && !isRealType(binop_dtype_b)
+        {
+          if boolOps.contains(op) {
+            // call bigint specific func which returns distr bool array
+            return st.insert(new shared SymEntry(doBigIntBinOpvvBoolReturn(l, r, op)));
+          }
+          // call bigint specific func which returns dist bigint array
+          const (tmp, max_bits) = doBigIntBinOpvv(l, r, op);
+          return st.insert(new shared SymEntry(tmp, max_bits));
+        } else {
+          const errorMsg = unrecognizedTypeError(pn, "("+type2str(binop_dtype_a)+","+type2str(binop_dtype_b)+")");
+          omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
+          return new MsgTuple(errorMsg, MsgType.ERROR);
+        }
     }
 
     /*
-    Parse and respond to binopsv message.
-    sv == scalar op vector
+      Parse and respond to binopvs message.
+      vs == vector op scalar
 
-    :arg reqMsg: request containing (cmd,op,dtype,value,aname)
-    :type reqMsg: string 
+      :arg reqMsg: request containing (cmd,op,aname,dtype,value)
+      :type reqMsg: string
 
-    :arg st: SymTab to act on
-    :type st: borrowed SymTab 
+      :arg st: SymTab to act on
+      :type st: borrowed SymTab
 
-    :returns: (MsgTuple) 
-    :throws: `UndefinedSymbolError(name)`
+      :returns: (MsgTuple)
+      :throws: `UndefinedSymbolError(name)`
     */
-    proc binopsvMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
+    @arkouda.instantiateAndRegister
+    proc binopvs(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab,
+      type binop_dtype_a,
+      type binop_dtype_b,
+      param array_nd: int
+    ): MsgTuple throws {
         param pn = Reflection.getRoutineName();
-        var repMsg: string = ""; // response message
 
-        // split request into fields
-        var (op, dtypeStr, value, aname) = payload.splitMsgToTuple(4);
+        const l = st[msgArgs['a']]: borrowed SymEntry(binop_dtype_a, array_nd),
+              val = msgArgs['value'].toScalar(binop_dtype_b),
+              op = msgArgs['op'].toScalar(string);
 
-        var dtype = str2dtype(dtypeStr);
-        var rname = st.nextName();
-        var right: borrowed GenSymEntry = st.lookup(aname);
-        
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                 "command = %t op = %t scalar dtype = %t scalar = %t pdarray = %t".format(
-                                   cmd,op,dtype2str(dtype),value,st.attrib(aname)));
+        omLogger.debug(getModuleName(), getRoutineName(), getLineNumber(),
+             "cmd: %? op: %? left pdarray: %? scalar: %?".format(
+                                          cmd,op,st.attrib(msgArgs['a'].val), val));
 
-        select (dtype, right.dtype) {
-            when (DType.Int64, DType.Int64) {
-                var val = try! value:int;
-                var r = toSymEntry(right,int);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a =  val:real / r.a:real;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, r.size, int);
-                        ref ea = e.a;
-                        ref ra = r.a;
-                        [(ei,ri) in zip(ea,ra)] ei = if ri != 0 then val/ri else 0;
-                    }
-                    when "%" { // modulo
-                        var e = st.addEntry(rname, r.size, int);
-                        ref ea = e.a;
-                        ref ra = r.a;
-                        [(ei,ri) in zip(ea,ra)] ei = if ri != 0 then val%ri else 0;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val != r.a;
-                    }
-                    when "<<" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val << r.a;
-                    }
-                    when ">>" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val >> r.a;
-                    }
-                    when "<<<" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = rotl(val, r.a);
-                    }
-                    when ">>>" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = rotr(val, r.a);
-                    }
-                    when "&" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val & r.a;
-                    }
-                    when "|" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val | r.a;
-                    }
-                    when "^" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val ^ r.a;
-                    }
-                    when "**" { 
-                        if || reduce (r.a<0){
-                            var errorMsg = "Attempt to exponentiate base of type Int64 to negative exponent";
-                            omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                            return new MsgTuple(errorMsg, MsgType.ERROR); 
-                        }
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a= val**r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Int64, DType.Float64) {
-                var val = try! value:int;
-                var r = toSymEntry(right,real);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val:real / r.a;
-                    }
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, r.size, real);
-                        ref ea = e.a;
-                        ref ra = r.a;
-                        [(ei,ri) in zip(ea,ra)] ei = if ri != 0 then floor(val:real / ri) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val != r.a;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a= val**r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                     
-                    }
-                }
-            }
-            when (DType.Float64, DType.Int64) {
-                var val = try! value:real;
-                var r = toSymEntry(right,int);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val / r.a:real;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, r.size, real);
-                        ref ea = e.a;
-                        ref ra = r.a;
-                        [(ei,ri) in zip(ea,ra)] ei = if ri != 0 then floor(val / ri:real) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val != r.a;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a= val**r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Float64, DType.Float64) {
-                var val = try! value:real;
-                var r = toSymEntry(right,real);
-                select op
-                {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val * r.a;
-                    }
-                    when "/" { // truediv
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val / r.a;
-                    } 
-                    when "//" { // floordiv
-                        var e = st.addEntry(rname, r.size, real);
-                        ref ea = e.a;
-                        ref ra = r.a;
-                        [(ei,ri) in zip(ea,ra)] ei = if ri != 0 then floor(val / ri) else NAN;
-                    }
-                    when "<" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val < r.a;
-                    }
-                    when ">" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val > r.a;
-                    }
-                    when "<=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val <= r.a;
-                    }
-                    when ">=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val >= r.a;
-                    }
-                    when "==" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val == r.a;
-                    }
-                    when "!=" {
-                        var e = st.addEntry(rname, r.size, bool);
-                        e.a = val != r.a;
-                    }
-                    when "**" { 
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a= val**r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }                        
-                }
-            }
-            when (DType.Bool, DType.Bool) {
-                var val = try! value.toLower():bool;
-                var r = toSymEntry(right, bool);
-                select op {
-                    when "|" {
-                        var e = st.addEntry(rname, r.size, bool);
-                         e.a = val | r.a;
-                    }
-                    when "&" {
-                        var e = st.addEntry(rname, r.size, bool);
-                         e.a = val & r.a;
-                    }
-                    when "^" {
-                        var e = st.addEntry(rname, r.size, bool);
-                         e.a = val ^ r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Bool, DType.Int64) {
-                var val = try! value.toLower():bool;
-                var r = toSymEntry(right, int);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val:int + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val:int - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val:int * r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Int64, DType.Bool) {
-                var val = try! value:int;
-                var r = toSymEntry(right, bool);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val + r.a:int;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val - r.a:int;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, int);
-                        e.a = val * r.a:int;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Bool, DType.Float64) {
-                var val = try! value.toLower():bool;
-                var r = toSymEntry(right, real);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val:real + r.a;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val:real - r.a;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val:real * r.a;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            when (DType.Float64, DType.Bool) {
-                var val = try! value:real;
-                var r = toSymEntry(right, bool);
-                select op {
-                    when "+" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val + r.a:real;
-                    }
-                    when "-" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val - r.a:real;
-                    }
-                    when "*" {
-                        var e = st.addEntry(rname, r.size, real);
-                        e.a = val * r.a:real;
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR); 
-                    }
-                }
-            }
-            otherwise {
-                var errorMsg = unrecognizedTypeError(pn,
-                                     "("+dtype2str(dtype)+","+dtype2str(right.dtype)+")");
-                omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                return new MsgTuple(errorMsg, MsgType.ERROR); 
-            }
+        use Set;
+        // This boolOps set is a filter to determine the output type for the operation.
+        // All operations that involve one of these operations result in a `bool` symbol
+        // table entry.
+        var boolOps: set(string);
+        boolOps.add("<");
+        boolOps.add("<=");
+        boolOps.add(">");
+        boolOps.add(">=");
+        boolOps.add("==");
+        boolOps.add("!=");
+
+        var realOps: set(string);
+        realOps.add("+");
+        realOps.add("-");
+        realOps.add("/");
+        realOps.add("//");
+
+        if binop_dtype_a == int && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          } else if op == "/" {
+            // True division is the only case in this int, int case
+            // that results in a `real` symbol table entry.
+            return doBinOpvs(l, val, real, op, pn, st);
+          }
+          return doBinOpvs(l, val, int, op, pn, st);
+        } else if binop_dtype_a == int && binop_dtype_b == real {
+          // Only two possible resultant types are `bool` and `real`
+          // for this case
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
         }
-        
-        repMsg = "created %s".format(st.attrib(rname));
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
-        return new MsgTuple(repMsg, MsgType.NORMAL);
+        else if binop_dtype_a == real && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == real {
+          // Only two possible resultant types are `bool` and `real`
+          // for this case
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == real {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
+        }
+        // For cases where a boolean operand is involved, the only
+        // possible resultant type is `bool`
+        else if binop_dtype_a == bool && binop_dtype_b == bool {
+          if (op == "<<") || (op == ">>") {
+            return doBinOpvs(l, val, int, op, pn, st);
+          }
+          return doBinOpvs(l, val, bool, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, int, op, pn, st);
+        }
+        else if binop_dtype_a == int && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, int, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == real {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, real, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, uint, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          return doBinOpvs(l, val, uint, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          if op == "/"{
+            return doBinOpvs(l, val, real, op, pn, st);
+          } else {
+            return doBinOpvs(l, val, uint, op, pn, st);
+          }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          // +, -, /, // both result in real outputs to match NumPy
+          if realOps.contains(op) {
+            return doBinOpvs(l, val, real, op, pn, st);
+          } else {
+            // isn't +, -, /, // so we can use LHS to determine type
+            return doBinOpvs(l, val, uint, op, pn, st);
+          }
+        }
+        else if binop_dtype_a == int && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpvs(l, val, bool, op, pn, st);
+          }
+          // +, -, /, // both result in real outputs to match NumPy
+          if realOps.contains(op) {
+            return doBinOpvs(l, val, real, op, pn, st);
+          } else {
+            // isn't +, -, /, // so we can use LHS to determine type
+            return doBinOpvs(l, val, int, op, pn, st);
+          }
+        }
+        else if (binop_dtype_a == bigint || binop_dtype_b == bigint) &&
+                !isRealType(binop_dtype_a) && !isRealType(binop_dtype_b)
+        {
+          if boolOps.contains(op) {
+            // call bigint specific func which returns distr bool array
+            return st.insert(new shared SymEntry(doBigIntBinOpvsBoolReturn(l, val, op)));
+          }
+          // call bigint specific func which returns dist bigint array
+          const (tmp, max_bits) = doBigIntBinOpvs(l, val, op);
+          return st.insert(new shared SymEntry(tmp, max_bits));
+        } else {
+          const errorMsg = unrecognizedTypeError(pn, "("+type2str(binop_dtype_a)+","+type2str(binop_dtype_b)+")");
+          omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
+          return MsgTuple.error(errorMsg);
+        }
     }
 
     /*
-    Parse and respond to opeqvv message.
-    vector op= vector
+      Parse and respond to binopsv message.
+      sv == scalar op vector
 
-    :arg reqMsg: request containing (cmd,op,aname,bname)
-    :type reqMsg: string 
+      :arg reqMsg: request containing (cmd,op,dtype,value,aname)
+      :type reqMsg: string 
 
-    :arg st: SymTab to act on
-    :type st: borrowed SymTab 
+      :arg st: SymTab to act on
+      :type st: borrowed SymTab 
 
-    :returns: (MsgTuple) 
-    :throws: `UndefinedSymbolError(name)`
+      :returns: (MsgTuple) 
+      :throws: `UndefinedSymbolError(name)`
     */
-    proc opeqvvMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
+    @arkouda.instantiateAndRegister
+    proc binopsv(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab,
+      type binop_dtype_a,
+      type binop_dtype_b,
+      param array_nd: int
+    ): MsgTuple throws {
         param pn = Reflection.getRoutineName();
-        var repMsg: string; // response message
 
-        // split request into fields
-        var (op, aname, bname) = payload.splitMsgToTuple(3);
+        const r = st[msgArgs['a']]: borrowed SymEntry(binop_dtype_a, array_nd),
+              val = msgArgs['value'].toScalar(binop_dtype_b),
+              op = msgArgs['op'].toScalar(string);
 
-        // retrieve left and right pdarray objects      
-        var left: borrowed GenSymEntry = st.lookup(aname);
-        var right: borrowed GenSymEntry = st.lookup(bname);
+        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
+                 "cmd: %? op = %? scalar dtype = %? scalar = %? pdarray = %?".format(
+                                   cmd,op,type2str(binop_dtype_b),msgArgs['value'].val,st.attrib(msgArgs['a'].val)));
+
+        use Set;
+        // This boolOps set is a filter to determine the output type for the operation.
+        // All operations that involve one of these operations result in a `bool` symbol
+        // table entry.
+        var boolOps: set(string);
+        boolOps.add("<");
+        boolOps.add("<=");
+        boolOps.add(">");
+        boolOps.add(">=");
+        boolOps.add("==");
+        boolOps.add("!=");
+
+        var realOps: set(string);
+        realOps.add("+");
+        realOps.add("-");
+        realOps.add("/");
+        realOps.add("//");
+
+        if binop_dtype_a == int && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          } else if op == "/" {
+            // True division is the only case in this int, int case
+            // that results in a `real` symbol table entry.
+            return doBinOpsv(val, r, real, op, pn, st);
+          }
+          return doBinOpsv(val, r, int, op, pn, st);
+        }
+        else if binop_dtype_a == int && binop_dtype_b == real {
+          // Only two possible resultant types are `bool` and `real`
+          // for this case
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == real {
+          // Only two possible resultant types are `bool` and `real`
+          // for this case
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == real {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        // For cases where a boolean operand is involved, the only
+        // possible resultant type is `bool`
+        else if binop_dtype_a == bool && binop_dtype_b == bool {
+          if (op == "<<") || (op == ">>") {
+            return doBinOpsv(val, r, int, op, pn, st);
+          }
+          return doBinOpsv(val, r, bool, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, int, op, pn, st);
+        }
+        else if binop_dtype_a == int && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, int, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == real {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == real && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, real, op, pn, st);
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, uint, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == bool {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          return doBinOpsv(val, r, uint, op, pn, st);
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          if op == "/"{
+            return doBinOpsv(val, r, real, op, pn, st);
+          } else {
+            return doBinOpsv(val, r, uint, op, pn, st);
+          }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == int {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          // +, -, /, // both result in real outputs to match NumPy
+          if realOps.contains(op) {
+            return doBinOpsv(val, r, real, op, pn, st);
+          } else {
+            // isn't +, -, /, // so we can use LHS to determine type
+            return doBinOpsv(val, r, uint, op, pn, st);
+          }
+        }
+        else if binop_dtype_a == int && binop_dtype_b == uint {
+          if boolOps.contains(op) {
+            return doBinOpsv(val, r, bool, op, pn, st);
+          }
+          // +, -, /, // both result in real outputs to match NumPy
+          if realOps.contains(op) {
+            return doBinOpsv(val, r, real, op, pn, st);
+          } else {
+            // isn't +, -, /, // so we can use LHS to determine type
+            return doBinOpsv(val, r, int, op, pn, st);
+          }
+        }
+        else if (binop_dtype_a == bigint || binop_dtype_b == bigint) &&
+                !isRealType(binop_dtype_a) && !isRealType(binop_dtype_b) {
+          if boolOps.contains(op) {
+            return st.insert(new shared SymEntry(doBigIntBinOpsvBoolReturn(val, r, op)));
+          }
+          // call bigint specific func which returns dist bigint array
+          const (tmp, max_bits) = doBigIntBinOpsv(val, r, op);
+          return st.insert(new shared SymEntry(tmp, max_bits));
+        } else {
+          const errorMsg = unrecognizedTypeError(pn, "("+type2str(binop_dtype_a)+","+type2str(binop_dtype_b)+")");
+          omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
+          return MsgTuple.error(errorMsg);
+        }
+    }
+
+    /*
+      Parse and respond to opeqvv message.
+      vector op= vector
+
+      :arg reqMsg: request containing (cmd,op,aname,bname)
+      :type reqMsg: string
+
+      :arg st: SymTab to act on
+      :type st: borrowed SymTab
+
+      :returns: (MsgTuple)
+      :throws: `UndefinedSymbolError(name)`
+    */
+    @arkouda.instantiateAndRegister
+    proc opeqvv(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab,
+      type binop_dtype_a,
+      type binop_dtype_b,
+      param array_nd: int
+    ): MsgTuple throws {
+        param pn = Reflection.getRoutineName();
+
+        var l = st[msgArgs['a']]: borrowed SymEntry(binop_dtype_a, array_nd);
+        const r = st[msgArgs['b']]: borrowed SymEntry(binop_dtype_b, array_nd),
+              op = msgArgs['op'].toScalar(string),
+              nie = notImplementedError(pn,type2str(binop_dtype_a),op,type2str(binop_dtype_b));
 
         omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
                     "cmd: %s op: %s left pdarray: %s right pdarray: %s".format(cmd,op,
-                                                         st.attrib(aname),st.attrib(bname)));
+                    st.attrib(msgArgs['a'].val),st.attrib(msgArgs['b'].val)));
 
-        select (left.dtype, right.dtype) {
-            when (DType.Int64, DType.Int64) {
-                var l = toSymEntry(left,int);
-                var r = toSymEntry(right,int);
-                select op
-                {
-                    when "+=" { l.a += r.a; }
-                    when "-=" { l.a -= r.a; }
-                    when "*=" { l.a *= r.a; }
-                    when "//=" {
-                        //l.a /= r.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(li,ri) in zip(la,ra)] li = if ri != 0 then li/ri else 0;
-                    }//floordiv
-                    when "%=" {
-                        //l.a /= r.a;
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(li,ri) in zip(la,ra)] li = if ri != 0 then li%ri else 0;
-                    }
-                    when "**=" { 
-                        if || reduce (r.a<0){
-                            var errorMsg =  "Attempt to exponentiate base of type Int64 to negative exponent";
-                            return new MsgTuple(errorMsg, MsgType.ERROR);                              
-                        }
-                        else{ l.a **= r.a; }
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
+        if binop_dtype_a == int && binop_dtype_b == int  {
+            select op {
+                when "+=" { l.a += r.a; }
+                when "-=" { l.a -= r.a; }
+                when "*=" { l.a *= r.a; }
+                when ">>=" { l.a >>= r.a;}
+                when "<<=" { l.a <<= r.a;}
+                when "//=" {
+                    //l.a /= r.a;
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = if ri != 0 then li/ri else 0;
+                }//floordiv
+                when "%=" {
+                    //l.a /= r.a;
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = if ri != 0 then li%ri else 0;
                 }
-            }
-            when (DType.Int64, DType.Float64) {
-                var l = toSymEntry(left,int);
-                var r = toSymEntry(right,real);
-
-                var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                return new MsgTuple(errorMsg, MsgType.ERROR);  
-            }
-            when (DType.Float64, DType.Int64) {
-                var l = toSymEntry(left,real);
-                var r = toSymEntry(right,int);
-
-                select op
-                {
-                    when "+=" {l.a += r.a;}
-                    when "-=" {l.a -= r.a;}
-                    when "*=" {l.a *= r.a;}
-                    when "/=" {l.a /= r.a:real;} //truediv
-                    when "//=" { //floordiv
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(li,ri) in zip(la,ra)] li = if ri != 0 then floor(li / ri) else NAN;
+                when "**=" {
+                    if || reduce (r.a<0){
+                        var errorMsg =  "Attempt to exponentiate base of type Int64 to negative exponent";
+                        return new MsgTuple(errorMsg, MsgType.ERROR);
                     }
-                    when "**=" { l.a **= r.a; }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);  
-                    }
+                    else{ l.a **= r.a; }
                 }
-            }
-            when (DType.Float64, DType.Float64) {
-                var l = toSymEntry(left,real);
-                var r = toSymEntry(right,real);
-                select op
-                {
-                    when "+=" {l.a += r.a;}
-                    when "-=" {l.a -= r.a;}
-                    when "*=" {l.a *= r.a;}
-                    when "/=" {l.a /= r.a;}//truediv
-                    when "//=" { //floordiv
-                        ref la = l.a;
-                        ref ra = r.a;
-                        [(li,ri) in zip(la,ra)] li = if ri != 0 then floor(li / ri) else NAN;
-                    }
-                    when "**=" { l.a **= r.a; }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);      
-                    }
-                }
-            }
-            when (DType.Bool, DType.Bool) {
-                var l = toSymEntry(left, bool);
-                var r = toSymEntry(right, bool);
-                select op
-                {
-                    when "|=" {l.a |= r.a;}
-                    when "&=" {l.a &= r.a;}
-                    when "^=" {l.a ^= r.a;}
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            when (DType.Int64, DType.Bool) {
-                var l = toSymEntry(left, int);
-                var r = toSymEntry(right, bool);
-                select op
-                { 
-                    when "+=" {l.a += r.a:int;}
-                    when "-=" {l.a -= r.a:int;}
-                    when "*=" {l.a *= r.a:int;}
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            when (DType.Float64, DType.Bool) {
-                var l = toSymEntry(left, real);
-                var r = toSymEntry(right, bool);
-                select op
-                {
-                    when "+=" {l.a += r.a:real;}
-                    when "-=" {l.a -= r.a:real;}
-                    when "*=" {l.a *= r.a:real;}
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,right.dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            otherwise {
-                var errorMsg = unrecognizedTypeError(pn,
-                                  "("+dtype2str(left.dtype)+","+dtype2str(right.dtype)+")");
-                omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                return new MsgTuple(errorMsg, MsgType.ERROR);                                 
+                otherwise do return MsgTuple.error(nie);
             }
         }
+        else if binop_dtype_a == int && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a += r.a:int;}
+                when "-=" {l.a -= r.a:int;}
+                when "*=" {l.a *= r.a:int;}
+                when ">>=" { l.a >>= r.a:int;}
+                when "<<=" { l.a <<= r.a:int;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == uint  {
+            select op {
+                when "+=" { l.a += r.a; }
+                when "-=" {
+                    l.a -= r.a;
+                }
+                when "*=" { l.a *= r.a; }
+                when "//=" {
+                    //l.a /= r.a;
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = if ri != 0 then li/ri else 0;
+                }//floordiv
+                when "%=" {
+                    //l.a /= r.a;
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = if ri != 0 then li%ri else 0;
+                }
+                when "**=" {
+                    l.a **= r.a;
+                }
+                when ">>=" { l.a >>= r.a;}
+                when "<<=" { l.a <<= r.a;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a += r.a:uint;}
+                when "-=" {l.a -= r.a:uint;}
+                when "*=" {l.a *= r.a:uint;}
+                when ">>=" { l.a >>= r.a:uint;}
+                when "<<=" { l.a <<= r.a:uint;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == int  {
+            select op {
+                when "+=" {l.a += r.a;}
+                when "-=" {l.a -= r.a;}
+                when "*=" {l.a *= r.a;}
+                when "/=" {l.a /= r.a:real;} //truediv
+                when "//=" { //floordiv
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = floorDivisionHelper(li, ri);
+                }
+                when "**=" { l.a **= r.a; }
+                when "%=" {
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = modHelper(li, ri);
+                }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == uint  {
+            select op {
+                when "+=" {l.a += r.a;}
+                when "-=" {l.a -= r.a;}
+                when "*=" {l.a *= r.a;}
+                when "/=" {l.a /= r.a:real;} //truediv
+                when "//=" { //floordiv
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = floorDivisionHelper(li, ri);
+                }
+                when "**=" { l.a **= r.a; }
+                when "%=" {
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = modHelper(li, ri);
+                }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == real  {
+            select op {
+                when "+=" {l.a += r.a;}
+                when "-=" {l.a -= r.a;}
+                when "*=" {l.a *= r.a;}
+                when "/=" {l.a /= r.a;}//truediv
+                when "//=" { //floordiv
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = floorDivisionHelper(li, ri);
+                }
+                when "**=" { l.a **= r.a; }
+                when "%=" {
+                    ref la = l.a;
+                    ref ra = r.a;
+                    [(li,ri) in zip(la,ra)] li = modHelper(li, ri);
+                }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a += r.a:real;}
+                when "-=" {l.a -= r.a:real;}
+                when "*=" {l.a *= r.a:real;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == bool  {
+            select op {
+                when "|=" {l.a |= r.a;}
+                when "&=" {l.a &= r.a;}
+                when "^=" {l.a ^= r.a;}
+                when "+=" {l.a |= r.a;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == int  {
+            ref la = l.a;
+            ref ra = r.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li += ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li -= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li *= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "//=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  if ri != 0 {
+                    li /= ri;
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "%=" {
+                // we can't use li %= ri because this can result in negatives
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  if ri != 0 {
+                    mod(li, li, ri);
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "**=" {
+                if || reduce (ra<0) {
+                  throw new Error("Attempt to exponentiate base of type BigInt to negative exponent");
+                }
+                if has_max_bits {
+                  forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                    powMod(li, li, ri, local_max_size + 1);
+                  }
+                }
+                else {
+                  forall (li, ri) in zip(la, ra) {
+                    li **= ri:uint;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == uint  {
+            ref la = l.a;
+            ref ra = r.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li += ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li -= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li *= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "//=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  if ri != 0 {
+                    li /= ri;
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "%=" {
+                // we can't use li %= ri because this can result in negatives
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  if ri != 0 {
+                    mod(li, li, ri);
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "**=" {
+                if || reduce (ra<0) {
+                  throw new Error("Attempt to exponentiate base of type BigInt to negative exponent");
+                }
+                if has_max_bits {
+                  forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                    powMod(li, li, ri, local_max_size + 1);
+                  }
+                }
+                else {
+                  forall (li, ri) in zip(la, ra) {
+                    li **= ri:uint;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == bool  {
+            ref la = l.a;
+            var ra = r.a:bigint;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li += ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li -= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li *= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == bigint  {
+            ref la = l.a;
+            ref ra = r.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li += ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li -= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  li *= ri;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "//=" {
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  if ri != 0 {
+                    li /= ri;
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "%=" {
+                // we can't use li %= ri because this can result in negatives
+                forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                  if ri != 0 {
+                    mod(li, li, ri);
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "**=" {
+                if || reduce (ra<0) {
+                  throw new Error("Attempt to exponentiate base of type BigInt to negative exponent");
+                }
+                if has_max_bits {
+                  forall (li, ri) in zip(la, ra) with (var local_max_size = max_size) {
+                    powMod(li, li, ri, local_max_size + 1);
+                  }
+                }
+                else {
+                  forall (li, ri) in zip(la, ra) {
+                    li **= ri:uint;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+          } else {
+            return MsgTuple.error(nie);
+          }
 
-        repMsg = "opeqvv success";
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
-        return new MsgTuple(repMsg, MsgType.NORMAL);
+        return MsgTuple.success();
     }
 
     /*
-    Parse and respond to opeqvs message.
-    vector op= scalar
+      Parse and respond to opeqvs message.
+      vector op= scalar
 
-    :arg reqMsg: request containing (cmd,op,aname,bname,rname)
-    :type reqMsg: string 
+      :arg reqMsg: request containing (cmd,op,aname,bname)
+      :type reqMsg: string
 
-    :arg st: SymTab to act on
-    :type st: borrowed SymTab 
+      :arg st: SymTab to act on
+      :type st: borrowed SymTab
 
-    :returns: (MsgTuple)
-    :throws: `UndefinedSymbolError(name)`
+      :returns: (MsgTuple)
+      :throws: `UndefinedSymbolError(name)`
     */
-    proc opeqvsMsg(cmd: string, payload: string, st: borrowed SymTab): MsgTuple throws {
+    @arkouda.instantiateAndRegister
+    proc opeqvs(cmd: string, msgArgs: borrowed MessageArgs, st: borrowed SymTab,
+      type binop_dtype_a,
+      type binop_dtype_b,
+      param array_nd: int
+    ): MsgTuple throws {
         param pn = Reflection.getRoutineName();
-        var repMsg: string; // response message
 
-        // split request into fields
-        var (op, aname, dtypeStr, value) = payload.splitMsgToTuple(4);
-        var dtype = str2dtype(dtypeStr);
+        var l = st[msgArgs['a']]: borrowed SymEntry(binop_dtype_a, array_nd);
+        const val = msgArgs['value'].toScalar(binop_dtype_b),
+              op = msgArgs['op'].toScalar(string),
+              nie = notImplementedError(pn,type2str(binop_dtype_a),op,type2str(binop_dtype_b));
 
         omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                        "cmd: %s op: %s aname: %s dtype: %s scalar: %s".format(
-                                                 cmd,op,aname,dtype2str(dtype),value));
+                         "op: %? pdarray: %? scalar: %?".format(op,st.attrib(msgArgs['a'].val),val));
 
-        var left: borrowed GenSymEntry = st.lookup(aname);
- 
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),
-                         "op: %t pdarray: %t scalar: %t".format(op,st.attrib(aname),value));
-        select (left.dtype, dtype) {
-            when (DType.Int64, DType.Int64) {
-                var l = toSymEntry(left,int);
-                var val = try! value:int;
-                select op
-                {
-                    when "+=" { l.a += val; }
-                    when "-=" { l.a -= val; }
-                    when "*=" { l.a *= val; }
-                    when "//=" { 
-                        if val != 0 {l.a /= val;} else {l.a = 0;}
-                    }//floordiv
-                    when "%=" { 
-                        if val != 0 {l.a %= val;} else {l.a = 0;}
+        if binop_dtype_a == int && binop_dtype_b == int  {
+            select op {
+                when "+=" { l.a += val; }
+                when "-=" { l.a -= val; }
+                when "*=" { l.a *= val; }
+                when ">>=" { l.a >>= val; }
+                when "<<=" { l.a <<= val; }
+                when "//=" {
+                    if val != 0 {l.a /= val;} else {l.a = 0;}
+                }//floordiv
+                when "%=" {
+                    if val != 0 {l.a %= val;} else {l.a = 0;}
+                }
+                when "**=" {
+                    if val<0 {
+                        var errorMsg = "Attempt to exponentiate base of type int64 to negative exponent";
+                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),
+                                                                          errorMsg);
+                        return new MsgTuple(errorMsg, MsgType.ERROR);
                     }
-                    when "**=" { 
-                        if (val<0){
-                            var errorMsg = "Attempt to exponentiate base of type Int64 to negative exponent";
-                            omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),
-                                                                              errorMsg);
-                            return new MsgTuple(errorMsg, MsgType.ERROR);                              
-                        }
-                        else{ l.a **= val; }
+                    else{ l.a **= val; }
 
-                    }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
                 }
-            }
-            when (DType.Int64, DType.Float64) {
-                var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                return new MsgTuple(errorMsg, MsgType.ERROR);  
-            }
-            when (DType.Float64, DType.Int64) {
-                var l = toSymEntry(left,real);
-                var val = try! value:int;
-                select op
-                {
-                    when "+=" {l.a += val;}
-                    when "-=" {l.a -= val;}
-                    when "*=" {l.a *= val;}
-                    when "/=" {l.a /= val:real;} //truediv
-                    when "//=" { //floordiv
-                        if val != 0 {l.a = floor(l.a / val);} else {l.a = NAN;}
-                    }
-                    when "**=" { l.a **= val; }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            when (DType.Float64, DType.Float64) {
-                var l = toSymEntry(left,real);
-                var val = try! value:real;
-                select op
-                {
-                    when "+=" {l.a += val;}
-                    when "-=" {l.a -= val;}
-                    when "*=" {l.a *= val;}
-                    when "/=" {l.a /= val;}//truediv
-                    when "//=" { //floordiv
-                        if val != 0 {l.a = floor(l.a / val);} else {l.a = NAN;}
-                    }
-                    when "**=" { l.a **= val; }
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
-                }
-            }
-            when (DType.Int64, DType.Bool) {
-                var l = toSymEntry(left, int);
-                var val = try! value: bool;
-                select op {
-                    when "+=" {l.a += val:int;}
-                    when "-=" {l.a -= val:int;}
-                    when "*=" {l.a *= val:int;}
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                         
-                    }
-                }
-            }
-            when (DType.Float64, DType.Bool) {
-                var l = toSymEntry(left, real);
-                var val = try! value: bool;
-                select op {
-                    when "+=" {l.a += val:real;}
-                    when "-=" {l.a -= val:real;}
-                    when "*=" {l.a *= val:real;}
-                    otherwise {
-                        var errorMsg = notImplementedError(pn,left.dtype,op,dtype);
-                        omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
-                        return new MsgTuple(errorMsg, MsgType.ERROR);                          
-                    }
-                }
-            }
-            otherwise {
-                var errorMsg = unrecognizedTypeError(pn,
-                                   "("+dtype2str(left.dtype)+","+dtype2str(dtype)+")");
-                omLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);                                           
-                return new MsgTuple(errorMsg, MsgType.ERROR);                
+                otherwise do return MsgTuple.error(nie);
             }
         }
-
-        repMsg = "opeqvs success";
-        omLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
-        return new MsgTuple(repMsg, MsgType.NORMAL);
+        else if binop_dtype_a == int && binop_dtype_b == uint  {
+            select op {
+                when ">>=" { l.a >>= val; }
+                when "<<=" { l.a <<= val; }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == int && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a += val:int;}
+                when "-=" {l.a -= val:int;}
+                when "*=" {l.a *= val:int;}
+                when ">>=" {l.a >>= val:int; }
+                when "<<=" {l.a <<= val:int; }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == int  {
+            select op {
+                when ">>=" { l.a >>= val; }
+                when "<<=" { l.a <<= val; }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == uint  {
+            select op {
+                when "+=" { l.a += val; }
+                when "-=" {
+                    l.a -= val;
+                }
+                when "*=" { l.a *= val; }
+                when "//=" {
+                    if val != 0 {l.a /= val;} else {l.a = 0;}
+                }//floordiv
+                when "%=" {
+                    if val != 0 {l.a %= val;} else {l.a = 0;}
+                }
+                when "**=" {
+                    l.a **= val;
+                }
+                when ">>=" { l.a >>= val; }
+                when "<<=" { l.a <<= val; }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == uint && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a += val:uint;}
+                when "-=" {l.a -= val:uint;}
+                when "*=" {l.a *= val:uint;}
+                when ">>=" { l.a >>= val:uint;}
+                when "<<=" { l.a <<= val:uint;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bool && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a |= val;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == int  {
+            select op {
+                when "+=" {l.a += val;}
+                when "-=" {l.a -= val;}
+                when "*=" {l.a *= val;}
+                when "/=" {l.a /= val:real;} //truediv
+                when "//=" { //floordiv
+                    ref la = l.a;
+                    [li in la] li = floorDivisionHelper(li, val);
+                }
+                when "**=" { l.a **= val; }
+                when "%=" {
+                    ref la = l.a;
+                    [li in la] li = modHelper(li, val);
+                }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == uint  {
+            select op {
+                when "+=" { l.a += val; }
+                when "-=" { l.a -= val; }
+                when "*=" { l.a *= val; }
+                when "//=" {
+                    ref la = l.a;
+                    [li in la] li = floorDivisionHelper(li, val);
+                }//floordiv
+                when "**=" {
+                    l.a **= val;
+                }
+                when "%=" {
+                    ref la = l.a;
+                    [li in la] li = modHelper(li, val);
+                }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == real  {
+            select op {
+                when "+=" {l.a += val;}
+                when "-=" {l.a -= val;}
+                when "*=" {l.a *= val;}
+                when "/=" {l.a /= val;}//truediv
+                when "//=" { //floordiv
+                    ref la = l.a;
+                    [li in la] li = floorDivisionHelper(li, val);
+                }
+                when "**=" { l.a **= val; }
+                when "%=" {
+                    ref la = l.a;
+                    [li in la] li = modHelper(li, val);
+                }
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == real && binop_dtype_b == bool  {
+            select op {
+                when "+=" {l.a += val:real;}
+                when "-=" {l.a -= val:real;}
+                when "*=" {l.a *= val:real;}
+                otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == int  {
+            ref la = l.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li += local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li -= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li *= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "//=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  if local_val != 0 {
+                    li /= local_val;
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "%=" {
+                // we can't use li %= val because this can result in negatives
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  if local_val != 0 {
+                    mod(li, li, local_val);
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "**=" {
+                if val<0 {
+                  throw new Error("Attempt to exponentiate base of type BigInt to negative exponent");
+                }
+                if has_max_bits {
+                  forall li in la with (var local_val = val, var local_max_size = max_size) {
+                    powMod(li, li, local_val, local_max_size + 1);
+                  }
+                }
+                else {
+                  forall li in la with (var local_val = val) {
+                    li **= local_val:uint;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == uint  {
+            ref la = l.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li += local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li -= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li *= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "//=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  if local_val != 0 {
+                    li /= local_val;
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "%=" {
+                // we can't use li %= val because this can result in negatives
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  if local_val != 0 {
+                    mod(li, li, local_val);
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "**=" {
+                if val<0 {
+                  throw new Error("Attempt to exponentiate base of type BigInt to negative exponent");
+                }
+                if has_max_bits {
+                  forall li in la with (var local_val = val, var local_max_size = max_size) {
+                    powMod(li, li, local_val, local_max_size + 1);
+                  }
+                }
+                else {
+                  forall li in la with (var local_val = val) {
+                    li **= local_val:uint;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == bool  {
+            ref la = l.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              // TODO change once we can cast directly from bool to bigint
+              when "+=" {
+                forall li in la with (var local_val = val:int:bigint, var local_max_size = max_size) {
+                  li += local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall li in la with (var local_val = val:int:bigint, var local_max_size = max_size) {
+                  li -= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall li in la with (var local_val = val:int:bigint, var local_max_size = max_size) {
+                  li *= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else if binop_dtype_a == bigint && binop_dtype_b == bigint  {
+            ref la = l.a;
+            var max_bits = l.max_bits;
+            var max_size = 1:bigint;
+            var has_max_bits = max_bits != -1;
+            if has_max_bits {
+              max_size <<= max_bits;
+              max_size -= 1;
+            }
+            select op {
+              when "+=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li += local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "-=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li -= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "*=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  li *= local_val;
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "//=" {
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  if local_val != 0 {
+                    li /= local_val;
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "%=" {
+                // we can't use li %= val because this can result in negatives
+                forall li in la with (var local_val = val, var local_max_size = max_size) {
+                  if local_val != 0 {
+                    mod(li, li, local_val);
+                  }
+                  else {
+                    li = 0:bigint;
+                  }
+                  if has_max_bits {
+                    li &= local_max_size;
+                  }
+                }
+              }
+              when "**=" {
+                if val<0 {
+                  throw new Error("Attempt to exponentiate base of type BigInt to negative exponent");
+                }
+                if has_max_bits {
+                  forall li in la with (var local_val = val, var local_max_size = max_size) {
+                    powMod(li, li, local_val, local_max_size + 1);
+                  }
+                }
+                else {
+                  forall li in la with (var local_val = val) {
+                    li **= local_val:uint;
+                  }
+                }
+              }
+              otherwise do return MsgTuple.error(nie);
+            }
+        }
+        else {
+          return MsgTuple.error(nie);
+        }
+        return MsgTuple.success();
     }
 }

@@ -1,4 +1,4 @@
-name: docs-gh-pages
+name: docs
 
 # Only publish docs when master changes
 on:
@@ -14,9 +14,9 @@ jobs:
     if: github.repository == 'Bears-R-Us/arkouda'
     runs-on: ubuntu-latest
     container:
-      image: chapel/chapel:1.25.0
+      image: chapel/chapel:2.1.0
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Install dependencies
       run: |
         apt-get update && apt-get install -y python3-pip rsync libhdf5-dev hdf5-tools libzmq3-dev
@@ -26,7 +26,7 @@ jobs:
       run: |
         make doc
     - name: publish-docs
-      uses: JamesIves/github-pages-deploy-action@4.1.0
+      uses: JamesIves/github-pages-deploy-action@v4
       with:
         branch: gh-pages # This is the branch we'll deploy to
         folder: docs # The folder we want to deploy, it becomes the root src of the branch
